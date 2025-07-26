@@ -1,0 +1,12 @@
+{
+  "CH-001": {
+    "id": "CH-001",
+    "label": "Raccordement lotissement",
+    "statut": "Prépa. en cours"
+  },
+  "CH-002": {
+    "id": "CH-002",
+    "label": "Sécurité disjoncteur",
+    "statut": "Nouveau"
+  }
+}
