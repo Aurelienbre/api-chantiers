@@ -41,15 +41,24 @@ def cloturer_chantier(payload: Dict[str, str]):
     return {"message": f"Chantier {ch_id} clôturé."}
 
 @app.post("/ajouter")
-def ajouter_chantier(payload: Dict[str, str]):
-    data = charger_donnees()
-    ch_id = payload.get("id")
-    if ch_id in data:
-        raise HTTPException(status_code=400, detail="Chantier déjà existant")
-    data[ch_id] = {
-        "id": ch_id,
+async def ajouter_chantier(req: Request):
+    payload = await req.json()
+    chantier_id = payload.get("id")
+
+    if not chantier_id:
+        raise HTTPException(status_code=400, detail="ID de chantier requis")
+
+    db = read_db()
+
+    db["chantiers"][chantier_id] = {
+        "id": chantier_id,
         "label": payload.get("label", ""),
-        "statut": payload.get("statut", "Nouveau")
+        "status": payload.get("statut", "Nouveau"),
+        "prepTime": payload.get("prepTime", 0),
+        "endDate": payload.get("endDate", ""),
+        "preparateur": payload.get("preparateur", None),
+        "planification": payload.get("planification", {}),
+        "ChargeRestante": payload.get("ChargeRestante", payload.get("prepTime", 0))
     }
     sauvegarder_donnees(data)
     return {"message": f"Chantier {ch_id} ajouté."}
