@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 import json
 from typing import Dict
@@ -48,7 +48,10 @@ async def ajouter_chantier(req: Request):
     if not chantier_id:
         raise HTTPException(status_code=400, detail="ID de chantier requis")
 
-    db = read_db()
+    db = charger_donnees()
+
+    if "chantiers" not in db:
+        db["chantiers"] = {}
 
     db["chantiers"][chantier_id] = {
         "id": chantier_id,
@@ -60,5 +63,6 @@ async def ajouter_chantier(req: Request):
         "planification": payload.get("planification", {}),
         "ChargeRestante": payload.get("ChargeRestante", payload.get("prepTime", 0))
     }
-    sauvegarder_donnees(data)
-    return {"message": f"Chantier {ch_id} ajouté."}
+
+    sauvegarder_donnees(db)
+    return {"message": f"Chantier {chantier_id} ajouté."}
