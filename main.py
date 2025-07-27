@@ -18,7 +18,7 @@ DB_PATH = "db.json"
 class Chantier(BaseModel):
     id: str = Field(..., example="TEST")
     label: str = Field(..., example="TEST")
-    status: str = Field(..., alias="statut", example="Nouveau")  # <-- accepte aussi 'status'
+    status: str = Field(..., example="Nouveau")  # <-- accepte aussi 'status'
     prepTime: int = Field(..., description="Durée de préparation en minutes", ge=0, example=900)
     endDate: str = Field(..., description="Date de fin au format DD/MM/YYYY", example="05/08/2025")
     preparateur: Optional[str] = Field(None, description="Nom du préparateur affecté", example="Sylvain MATHAIS")
