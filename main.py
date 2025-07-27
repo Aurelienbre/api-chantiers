@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Dict, Optional, Any
 import json
+import os
 
 app = FastAPI()
 
@@ -27,11 +28,11 @@ class Chantier(BaseModel):
 
 
 def charger_donnees() -> Dict[str, Any]:
-    try:
-        with open(DB_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {}
+    """Charge les données depuis db.json ou retourne une erreur si le fichier est absent."""
+    if not os.path.isfile(DB_PATH):
+        raise HTTPException(status_code=500, detail="Fichier de base de données introuvable")
+    with open(DB_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def sauvegarder_donnees(data: Dict[str, Any]) -> None:
@@ -51,7 +52,6 @@ def ajouter_chantier(chantier: Chantier):
     data = charger_donnees()
     if chantier.id in data:
         raise HTTPException(status_code=400, detail="Chantier déjà existant")
-    # Construire l'objet JSON à stocker
     obj = chantier.dict()
     data[chantier.id] = obj
     sauvegarder_donnees(data)
@@ -68,4 +68,3 @@ def cloturer_chantier(payload: Dict[str, str]):
     data[ch_id]["statut"] = "Clôturé"
     sauvegarder_donnees(data)
     return {"message": f"Chantier {ch_id} clôturé.", "chantier": data[ch_id]}
-
