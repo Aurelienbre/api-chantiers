@@ -18,7 +18,7 @@ DB_PATH = "db.json"
 class Chantier(BaseModel):
     id: str = Field(..., example="TEST")
     label: str = Field(..., example="TEST")
-    statut: str = Field(..., alias="status", example="Nouveau")  # accepte aussi 'status'
+    status: str = Field(..., alias="status", example="Nouveau")  # <-- accepte aussi 'status'
     prepTime: int = Field(..., description="Durée de préparation en minutes", ge=0, example=900)
     endDate: str = Field(..., description="Date de fin au format DD/MM/YYYY", example="05/08/2025")
     preparateur: Optional[str] = Field(None, description="Nom du préparateur affecté", example="Sylvain MATHAIS")
@@ -31,18 +31,20 @@ class Chantier(BaseModel):
 
 class ChantierUpdate(BaseModel):
     label: Optional[str]
-    statut: Optional[str]
+    status: Optional[str]
     prepTime: Optional[int]
     endDate: Optional[str]
     preparateur: Optional[str]
     planification: Optional[Dict[str, Any]]
     ChargeRestante: Optional[int]
 
+
 def charger_donnees() -> Dict[str, Any]:
     if not os.path.isfile(DB_PATH):
         raise HTTPException(status_code=500, detail="Fichier de base de données introuvable")
     with open(DB_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
+
 
 def sauvegarder_donnees(data: Dict[str, Any]) -> None:
     with open(DB_PATH, "w", encoding="utf-8") as f:
@@ -93,6 +95,6 @@ def cloturer_chantier(payload: Dict[str, str]):
     ch_id = payload.get("id")
     if not ch_id or ch_id not in data:
         raise HTTPException(status_code=404, detail="Chantier introuvable")
-    data[ch_id]["statut"] = "Clôturé"
+    data[ch_id]["status"] = "Clôturé"
     sauvegarder_donnees(data)
     return {"message": f"Chantier {ch_id} clôturé.", "chantier": data[ch_id]}
