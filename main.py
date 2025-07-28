@@ -121,9 +121,14 @@ class Chantier(BaseModel):
     
 @app.get("/debug-sql")
 def debug_sql():
-    with Session(engine) as session:
-        result = session.exec(select(Chantier)).all()
-        return result
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, label, status, prepTime, endDate, preparateur_nom, ChargeRestante FROM chantiers")
+    rows = cur.fetchall()
+    chantiers = [chantier_to_dict(row, get_planification_for_chantier(conn, row[0])) for row in rows]
+    conn.close()
+    return chantiers
+
 
 class ChantierUpdate(BaseModel):
     label: Optional[str]
