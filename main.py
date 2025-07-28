@@ -82,35 +82,34 @@ def update_chantier(ch_id: str, update: ChantierUpdate):
     return {"message": f"Chantier {ch_id} mis à jour.", "chantier": existing}
 
 from fastapi import FastAPI, HTTPException, Body  # ✅ N'oublie pas Body ici
+class ChantiersBulk(BaseModel):
+    chantiers: List[Chantier]
 
 @app.put("/chantiers/bulk")
-def bulk_update_chantiers(chantiers: List[Chantier] = Body(..., embed=False)):
+def bulk_update_chantiers(payload: ChantiersBulk):
     """
-    Met à jour en masse les chantiers existants ou les ajoute s'ils sont nouveaux.
-    Compatible avec un envoi direct de tableau JSON depuis le frontend.
+    Met à jour en masse les chantiers via un objet { chantiers: [...] }.
     """
-    try:
-        data = charger_donnees()
-        count_update = 0
-        count_new = 0
+    chantiers = payload.chantiers
+    data = charger_donnees()
+    count_update = 0
+    count_new = 0
 
-        for ch in chantiers:
-            chantier_dict = ch.dict()
-            if ch.id in data:
-                data[ch.id].update(chantier_dict)
-                count_update += 1
-            else:
-                data[ch.id] = chantier_dict
-                count_new += 1
+    for ch in chantiers:
+        chantier_dict = ch.dict()
+        if ch.id in data:
+            data[ch.id].update(chantier_dict)
+            count_update += 1
+        else:
+            data[ch.id] = chantier_dict
+            count_new += 1
 
-        sauvegarder_donnees(data)
-        return {
-            "message": f"{count_update} chantiers mis à jour, {count_new} nouveaux chantiers ajoutés.",
-            "total": count_update + count_new
-        }
-    except Exception as e:
-        print("❌ ERREUR bulk_update_chantiers :", str(e))
-        raise HTTPException(status_code=500, detail=f"Erreur serveur : {str(e)}")
+    sauvegarder_donnees(data)
+    return {
+        "message": f"{count_update} chantiers mis à jour, {count_new} nouveaux chantiers ajoutés.",
+        "total": count_update + count_new
+    }
+
 
 
 @app.post("/cloturer")
