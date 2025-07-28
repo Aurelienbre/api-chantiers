@@ -121,13 +121,25 @@ class Chantier(BaseModel):
     
 @app.get("/debug-sql")
 def debug_sql():
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT id, label, status, prepTime, endDate, preparateur_nom, ChargeRestante FROM chantiers")
-    rows = cur.fetchall()
-    chantiers = [chantier_to_dict(row, get_planification_for_chantier(conn, row[0])) for row in rows]
-    conn.close()
-    return chantiers
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT id, label, status, prepTime, endDate, preparateur_nom, ChargeRestante FROM chantiers")
+        rows = cur.fetchall()
+        chantiers = []
+
+        for row in rows:
+            chantier_id = row[0]
+            planif = get_planification_for_chantier(conn, chantier_id)
+            chantier = chantier_to_dict(row, planif)
+            chantiers.append(chantier)
+
+        conn.close()
+        return chantiers
+
+    except Exception as e:
+        return {"error": str(e)}
+
 
 
 class ChantierUpdate(BaseModel):
