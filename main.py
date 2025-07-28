@@ -118,6 +118,12 @@ class Chantier(BaseModel):
     preparateur: Optional[str] = Field(None, example="Sylvain MATHAIS")
     planification: Dict[str, Any] = Field(default_factory=dict)
     ChargeRestante: int = Field(...)
+    
+@app.get("/debug-sql")
+def debug_sql():
+    with Session(engine) as session:
+        result = session.exec(select(Chantier)).all()
+        return result
 
 class ChantierUpdate(BaseModel):
     label: Optional[str]
