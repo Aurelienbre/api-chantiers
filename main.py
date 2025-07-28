@@ -177,13 +177,30 @@ def get_planification_for_chantier(conn, chantier_id):
 def get_chantiers():
     conn = get_db()
     cur = conn.cursor()
+
+    # 1️⃣ Récupération des chantiers + planification
     cur.execute("SELECT id, label, status, prepTime, endDate, preparateur_nom, ChargeRestante FROM chantiers")
     chantiers = {}
     for row in cur.fetchall():
         planif = get_planification_for_chantier(conn, row[0])
         chantiers[row[0]] = chantier_to_dict(row, planif)
+
+    # 2️⃣ Récupération des préparateurs
+    cur.execute("SELECT nom, nni FROM preparateurs")
+    preparateurs = {nom: {"nni": nni, "disponibilites": {}} for nom, nni in cur.fetchall()}
+
+    # 3️⃣ Ajout des disponibilités hebdomadaires par préparateur
+    cur.execute("SELECT preparateur_nom, semaine, minutes FROM disponibilites")
+    for nom, semaine, minutes in cur.fetchall():
+        if nom in preparateurs:
+            preparateurs[nom]["disponibilites"][semaine] = minutes
+
     conn.close()
-    return chantiers
+
+    return {
+        "chantiers": chantiers,
+        "preparateurs": preparateurs
+    }
 
 @app.post("/ajouter", status_code=201)
 def ajouter_chantier(chantier: Chantier):
