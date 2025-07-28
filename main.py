@@ -81,12 +81,31 @@ def update_chantier(ch_id: str, update: ChantierUpdate):
     sauvegarder_donnees(data)
     return {"message": f"Chantier {ch_id} mis à jour.", "chantier": existing}
 
-@app.put("/chantiers/bulk", status_code=200)
-def bulk_update_chantiers(chantiers_list: List[Chantier]):
-    """Remplace l'ensemble des chantiers et leurs planifications."""
-    data = {c.id: c.dict() for c in chantiers_list}
+@app.put("/chantiers/bulk")
+def bulk_update_chantiers(chantiers: List[Chantier]):
+    """
+    Met à jour en masse les chantiers existants ou les ajoute s'ils sont nouveaux.
+    Utilisé pour synchroniser les planifications générées automatiquement.
+    """
+    data = charger_donnees()
+    count_update = 0
+    count_new = 0
+
+    for ch in chantiers:
+        chantier_dict = ch.dict()
+        if ch.id in data:
+            data[ch.id].update(chantier_dict)
+            count_update += 1
+        else:
+            data[ch.id] = chantier_dict
+            count_new += 1
+
     sauvegarder_donnees(data)
-    return {"message": "Tous les chantiers ont été mis à jour.", "chantiers": data}
+    return {
+        "message": f"{count_update} chantiers mis à jour, {count_new} nouveaux chantiers ajoutés.",
+        "total": count_update + count_new
+    }
+
 
 @app.post("/cloturer")
 def cloturer_chantier(payload: Dict[str, str]):
