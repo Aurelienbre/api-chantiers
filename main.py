@@ -84,7 +84,29 @@ def update_chantier(ch_id: str, update: ChantierUpdate):
 from fastapi import Body
 
 @app.put("/chantiers/bulk")
-def bulk_update_chantiers(chantiers: List[Chantier] = Body(...)):
+def bulk_update_chantiers(chantiers: List[Chantier] = Body(..., embed=False)):
+    """
+    Met à jour en masse les chantiers existants ou les ajoute s'ils sont nouveaux.
+    Compatible avec un envoi direct de tableau JSON depuis le frontend.
+    """
+    data = charger_donnees()
+    count_update = 0
+    count_new = 0
+
+    for ch in chantiers:
+        chantier_dict = ch.dict()
+        if ch.id in data:
+            data[ch.id].update(chantier_dict)
+            count_update += 1
+        else:
+            data[ch.id] = chantier_dict
+            count_new += 1
+
+    sauvegarder_donnees(data)
+    return {
+        "message": f"{count_update} chantiers mis à jour, {count_new} nouveaux chantiers ajoutés.",
+        "total": count_update + count_new
+    }
     """
     Met à jour en masse les chantiers existants ou les ajoute s'ils sont nouveaux.
     Utilisé pour synchroniser les planifications générées automatiquement.
