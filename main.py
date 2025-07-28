@@ -81,8 +81,14 @@ def update_chantier(ch_id: str, update: ChantierUpdate):
     sauvegarder_donnees(data)
     return {"message": f"Chantier {ch_id} mis à jour.", "chantier": existing}
 
+from fastapi import FastAPI, HTTPException, Body  # ✅ N'oublie pas Body ici
+
 @app.put("/chantiers/bulk")
 def bulk_update_chantiers(chantiers: List[Chantier] = Body(..., embed=False)):
+    """
+    Met à jour en masse les chantiers existants ou les ajoute s'ils sont nouveaux.
+    Compatible avec un envoi direct de tableau JSON depuis le frontend.
+    """
     try:
         data = charger_donnees()
         count_update = 0
