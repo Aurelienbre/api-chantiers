@@ -1,37 +1,25 @@
-# Configuration pour PostgreSQL sur Render
+# Configuration pour PostgreSQL sur Render avec psycopg3
 import os
 from urllib.parse import urlparse
 
 def get_database_connection():
-    """Retourne une connexion PostgreSQL"""
+    """Retourne une connexion PostgreSQL avec psycopg3"""
     database_url = os.environ.get('DATABASE_URL')
     
     if not database_url:
-        raise Exception("❌ DATABASE_URL non définie. Vérifiez la variable d'environnement sur Render.")
+        raise Exception("❌ DATABASE_URL non définie.")
         
-    print(f"✅ DATABASE_URL détectée: {database_url[:20]}...")
+    # Utiliser psycopg3 (déjà testé et fonctionnel)
+    import psycopg
     
-    try:
-        import psycopg2
-        print("✅ psycopg2 importé avec succès")
-    except ImportError as e:
-        print(f"❌ Erreur import psycopg2: {e}")
-        raise Exception("psycopg2-binary non installé. Vérifiez requirements.txt et les logs de build Render.")
-        
-    try:
-        url = urlparse(database_url)
-        conn = psycopg2.connect(
-            database=url.path[1:],
-            user=url.username,
-            password=url.password,
-            host=url.hostname,
-            port=url.port
-        )
-        print("✅ Connexion PostgreSQL réussie")
-        return conn
-    except Exception as e:
-        print(f"❌ Erreur connexion PostgreSQL: {e}")
-        raise
+    url = urlparse(database_url)
+    return psycopg.connect(
+        dbname=url.path[1:],
+        user=url.username,
+        password=url.password,
+        host=url.hostname,
+        port=url.port
+    )
 
 def execute_query(query, params=None, fetch=False):
     """Exécute une requête avec gestion des différences PostgreSQL/SQLite"""
