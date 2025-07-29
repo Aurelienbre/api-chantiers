@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import os
 
 app = FastAPI()
 app.add_middleware(
@@ -11,11 +12,19 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "API Pilotage RIP fonctionne!", "status": "✅ Pas de base de données pour le moment"}
+    return {"message": "API Pilotage RIP fonctionne!", "status": "✅ Version temporaire sans base de données"}
 
 @app.get("/chantiers")
 def get_chantiers():
-    return {"message": "Endpoint temporaire - base de données en cours de configuration"}
+    return {"message": "Endpoint chantiers - temporaire sans base de données"}
+
+@app.get("/preparateurs")
+def get_preparateurs():
+    return {"message": "Endpoint preparateurs - temporaire sans base de données"}
+
+@app.get("/disponibilites")
+def get_disponibilites():
+    return {"message": "Endpoint disponibilites - temporaire sans base de données"}
 
 if __name__ == "__main__":
     import uvicorn
