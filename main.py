@@ -98,6 +98,73 @@ def test_database():
             "solution": "Vérifiez les paramètres de la base PostgreSQL"
         }
 
+@app.get("/migrate-data")
+def migrate_data():
+    """Migration des données db.json vers PostgreSQL"""
+    try:
+        from database_config import get_database_connection
+        import json
+        
+        # Vérifier si les tables existent déjà
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Vérifier si la table preparateurs existe
+        cur.execute("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'preparateurs')")
+        tables_exist = cur.fetchone()[0]
+        
+        if tables_exist:
+            conn.close()
+            return {"status": "✅ Tables déjà créées", "message": "Migration déjà effectuée"}
+        
+        # Créer les tables PostgreSQL
+        cur.execute("""
+        CREATE TABLE preparateurs (
+            nom TEXT PRIMARY KEY,
+            nni TEXT
+        );
+
+        CREATE TABLE disponibilites (
+            id SERIAL PRIMARY KEY,
+            preparateur_nom TEXT,
+            semaine TEXT,
+            minutes INTEGER,
+            updatedAt TEXT,
+            FOREIGN KEY (preparateur_nom) REFERENCES preparateurs(nom)
+        );
+
+        CREATE TABLE chantiers (
+            id TEXT PRIMARY KEY,
+            label TEXT,
+            status TEXT,
+            prepTime INTEGER,
+            endDate TEXT,
+            preparateur_nom TEXT,
+            ChargeRestante INTEGER,
+            FOREIGN KEY (preparateur_nom) REFERENCES preparateurs(nom)
+        );
+
+        CREATE TABLE planifications (
+            id SERIAL PRIMARY KEY,
+            chantier_id TEXT,
+            semaine TEXT,
+            minutes INTEGER,
+            FOREIGN KEY (chantier_id) REFERENCES chantiers(id)
+        );
+        """)
+        
+        conn.commit() 
+        conn.close()
+        
+        return {
+            "status": "✅ Tables créées !",
+            "message": "Migration des structures terminée",
+            "next_step": "Les tables sont prêtes pour les données"
+        }
+        
+    except Exception as e:
+        return {"status": "❌ Erreur", "error": str(e)}
+
 @app.get("/chantiers")
 def get_chantiers():
     return {"message": "Endpoint chantiers - temporaire sans base de données"}
