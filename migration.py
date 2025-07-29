@@ -50,17 +50,20 @@ def create_tables():
         );
         """)
     else:  # SQLite - PAS de CASCADE !
-        cur.execute("""
-        DROP TABLE IF EXISTS disponibilites;
-        DROP TABLE IF EXISTS planifications;
-        DROP TABLE IF EXISTS chantiers;
-        DROP TABLE IF EXISTS preparateurs;
+        # SQLite: supprimer dans l'ordre inverse des dépendances
+        cur.execute("DROP TABLE IF EXISTS planifications;")
+        cur.execute("DROP TABLE IF EXISTS disponibilites;") 
+        cur.execute("DROP TABLE IF EXISTS chantiers;")
+        cur.execute("DROP TABLE IF EXISTS preparateurs;")
 
+        cur.execute("""
         CREATE TABLE preparateurs (
             nom TEXT PRIMARY KEY,
             nni TEXT
         );
-
+        """)
+        
+        cur.execute("""
         CREATE TABLE disponibilites (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             preparateur_nom TEXT,
@@ -69,7 +72,9 @@ def create_tables():
             updatedAt TEXT,
             FOREIGN KEY (preparateur_nom) REFERENCES preparateurs(nom)
         );
-
+        """)
+        
+        cur.execute("""
         CREATE TABLE chantiers (
             id TEXT PRIMARY KEY,
             label TEXT,
@@ -80,7 +85,9 @@ def create_tables():
             ChargeRestante INTEGER,
             FOREIGN KEY (preparateur_nom) REFERENCES preparateurs(nom)
         );
-
+        """)
+        
+        cur.execute("""
         CREATE TABLE planifications (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             chantier_id TEXT,
