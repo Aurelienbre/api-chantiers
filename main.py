@@ -49,13 +49,25 @@ def test_database():
         from urllib.parse import urlparse
         url = urlparse(database_url)
         
-        conn = psycopg_module.connect(
-            database=url.path[1:],
-            user=url.username,
-            password=url.password,
-            host=url.hostname,
-            port=url.port
-        )
+        # Adapter les paramètres selon la version psycopg
+        if 'psycopg3' in psycopg_status:
+            # psycopg3 utilise 'dbname' au lieu de 'database'
+            conn = psycopg_module.connect(
+                dbname=url.path[1:],
+                user=url.username,
+                password=url.password,
+                host=url.hostname,
+                port=url.port
+            )
+        else:
+            # psycopg2 utilise 'database'
+            conn = psycopg_module.connect(
+                database=url.path[1:],
+                user=url.username,
+                password=url.password,
+                host=url.hostname,
+                port=url.port
+            )
         
         # Test d'une requête simple
         cur = conn.cursor()
