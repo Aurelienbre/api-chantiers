@@ -27,15 +27,21 @@ def test_database():
         }
     
     try:
-        # Test d'import psycopg2
-        import psycopg2
-        psycopg2_status = f"✅ psycopg2 v{psycopg2.__version__}"
+        # Test d'import psycopg3 (ou psycopg2 en fallback)
+        try:
+            import psycopg
+            psycopg_status = f"✅ psycopg3 v{psycopg.__version__}"
+            psycopg_module = psycopg
+        except ImportError:
+            import psycopg2
+            psycopg_status = f"✅ psycopg2 v{psycopg2.__version__}"
+            psycopg_module = psycopg2
     except ImportError as e:
         return {
             "status": "❌ Échec", 
-            "error": f"psycopg2 non disponible: {e}",
+            "error": f"Aucun module psycopg disponible: {e}",
             "database_url_present": True,
-            "solution": "Ajouter psycopg2-binary au requirements.txt"
+            "solution": "Installer psycopg[binary] ou psycopg2-binary"
         }
     
     try:
@@ -43,7 +49,7 @@ def test_database():
         from urllib.parse import urlparse
         url = urlparse(database_url)
         
-        conn = psycopg2.connect(
+        conn = psycopg_module.connect(
             database=url.path[1:],
             user=url.username,
             password=url.password,
@@ -63,7 +69,7 @@ def test_database():
         
         return {
             "status": "✅ Succès complet !",
-            "psycopg2": psycopg2_status,
+            "psycopg": psycopg_status,
             "database_url": "✅ Présente",
             "connection": "✅ Réussie",
             "database_version": db_version[:50] + "...",
@@ -74,7 +80,7 @@ def test_database():
     except Exception as e:
         return {
             "status": "❌ Échec connexion",
-            "psycopg2": psycopg2_status,
+            "psycopg": psycopg_status,
             "database_url": "✅ Présente", 
             "connection_error": str(e),
             "solution": "Vérifiez les paramètres de la base PostgreSQL"
