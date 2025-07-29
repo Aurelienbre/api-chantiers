@@ -109,59 +109,74 @@ def migrate_data():
         conn = get_database_connection()
         cur = conn.cursor()
         
-        # Vérifier si la table preparateurs existe
+        # Vérifier si les données sont déjà migrées
+        cur.execute("SELECT COUNT(*) FROM preparateurs")
+        data_count = cur.fetchone()[0]
+        
+        if data_count > 0:
+            conn.close()
+            return {"status": "✅ Données déjà migrées", "message": f"{data_count} préparateurs trouvés"}
+        
+        # Créer les tables PostgreSQL si elles n'existent pas
         cur.execute("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'preparateurs')")
         tables_exist = cur.fetchone()[0]
         
-        if tables_exist:
-            conn.close()
-            return {"status": "✅ Tables déjà créées", "message": "Migration déjà effectuée"}
-        
-        # Créer les tables PostgreSQL
-        cur.execute("""
-        CREATE TABLE preparateurs (
-            nom TEXT PRIMARY KEY,
-            nni TEXT
-        );
+        if not tables_exist:
+            cur.execute("""
+            CREATE TABLE preparateurs (
+                nom TEXT PRIMARY KEY,
+                nni TEXT
+            );
 
-        CREATE TABLE disponibilites (
-            id SERIAL PRIMARY KEY,
-            preparateur_nom TEXT,
-            semaine TEXT,
-            minutes INTEGER,
-            updatedAt TEXT,
-            FOREIGN KEY (preparateur_nom) REFERENCES preparateurs(nom)
-        );
+            CREATE TABLE disponibilites (
+                id SERIAL PRIMARY KEY,
+                preparateur_nom TEXT,
+                semaine TEXT,
+                minutes INTEGER,
+                updatedAt TEXT,
+                FOREIGN KEY (preparateur_nom) REFERENCES preparateurs(nom)
+            );
 
-        CREATE TABLE chantiers (
-            id TEXT PRIMARY KEY,
-            label TEXT,
-            status TEXT,
-            prepTime INTEGER,
-            endDate TEXT,
-            preparateur_nom TEXT,
-            ChargeRestante INTEGER,
-            FOREIGN KEY (preparateur_nom) REFERENCES preparateurs(nom)
-        );
+            CREATE TABLE chantiers (
+                id TEXT PRIMARY KEY,
+                label TEXT,
+                status TEXT,
+                prepTime INTEGER,
+                endDate TEXT,
+                preparateur_nom TEXT,
+                ChargeRestante INTEGER,
+                FOREIGN KEY (preparateur_nom) REFERENCES preparateurs(nom)
+            );
 
-        CREATE TABLE planifications (
-            id SERIAL PRIMARY KEY,
-            chantier_id TEXT,
-            semaine TEXT,
-            minutes INTEGER,
-            FOREIGN KEY (chantier_id) REFERENCES chantiers(id)
-        );
-        """)
-        
-        conn.commit() 
-        conn.close()
+            CREATE TABLE planifications (
+                id SERIAL PRIMARY KEY,
+                chantier_id TEXT,
+                semaine TEXT,
+                minutes INTEGER,
+                FOREIGN KEY (chantier_id) REFERENCES chantiers(id)
+            );
+            """)
+            conn.commit()
         
         # Charger et migrer les données db.json
         try:
-            with open('API/db.json', 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            # Essayer plusieurs chemins possibles pour db.json
+            json_paths = ['db.json', 'API/db.json', './db.json']
+            data = None
+            
+            for path in json_paths:
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        break
+                except FileNotFoundError:
+                    continue
+            
+            if data is None:
+                raise FileNotFoundError("db.json non trouvé")
+                
         except FileNotFoundError:
-            # Si db.json n'existe pas localement, créer des données de test
+            # Si db.json n'existe pas, créer des données de test
             data = {
                 "preparateurs": {
                     "Eric CHAPUIS": "F51742",
