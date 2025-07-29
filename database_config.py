@@ -7,21 +7,31 @@ def get_database_connection():
     database_url = os.environ.get('DATABASE_URL')
     
     if not database_url:
-        raise Exception("DATABASE_URL non définie. Cette application nécessite PostgreSQL.")
+        raise Exception("❌ DATABASE_URL non définie. Vérifiez la variable d'environnement sur Render.")
         
+    print(f"✅ DATABASE_URL détectée: {database_url[:20]}...")
+    
     try:
         import psycopg2
-    except ImportError:
-        raise Exception("psycopg2 non installé. Installez-le avec: pip install psycopg2-binary")
+        print("✅ psycopg2 importé avec succès")
+    except ImportError as e:
+        print(f"❌ Erreur import psycopg2: {e}")
+        raise Exception("psycopg2-binary non installé. Vérifiez requirements.txt et les logs de build Render.")
         
-    url = urlparse(database_url)
-    return psycopg2.connect(
-        database=url.path[1:],
-        user=url.username,
-        password=url.password,
-        host=url.hostname,
-        port=url.port
-    )
+    try:
+        url = urlparse(database_url)
+        conn = psycopg2.connect(
+            database=url.path[1:],
+            user=url.username,
+            password=url.password,
+            host=url.hostname,
+            port=url.port
+        )
+        print("✅ Connexion PostgreSQL réussie")
+        return conn
+    except Exception as e:
+        print(f"❌ Erreur connexion PostgreSQL: {e}")
+        raise
 
 def execute_query(query, params=None, fetch=False):
     """Exécute une requête avec gestion des différences PostgreSQL/SQLite"""
