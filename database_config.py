@@ -1,31 +1,27 @@
-# Configuration pour base de données persistante
+# Configuration pour PostgreSQL sur Render
 import os
-import sqlite3
 from urllib.parse import urlparse
 
 def get_database_connection():
-    """Retourne une connexion à la base de données (PostgreSQL sur Render, SQLite en local)"""
+    """Retourne une connexion PostgreSQL"""
     database_url = os.environ.get('DATABASE_URL')
     
-    if database_url:
-        # Production avec PostgreSQL sur Render
-        try:
-            import psycopg2
-        except ImportError:
-            print("psycopg2 non installé, utilisation de SQLite")
-            return sqlite3.connect("db.sqlite3")
-            
-        url = urlparse(database_url)
-        return psycopg2.connect(
-            database=url.path[1:],
-            user=url.username,
-            password=url.password,
-            host=url.hostname,
-            port=url.port
-        )
-    else:
-        # Développement local avec SQLite
-        return sqlite3.connect("db.sqlite3")
+    if not database_url:
+        raise Exception("DATABASE_URL non définie. Cette application nécessite PostgreSQL.")
+        
+    try:
+        import psycopg2
+    except ImportError:
+        raise Exception("psycopg2 non installé. Installez-le avec: pip install psycopg2-binary")
+        
+    url = urlparse(database_url)
+    return psycopg2.connect(
+        database=url.path[1:],
+        user=url.username,
+        password=url.password,
+        host=url.hostname,
+        port=url.port
+    )
 
 def execute_query(query, params=None, fetch=False):
     """Exécute une requête avec gestion des différences PostgreSQL/SQLite"""
