@@ -196,13 +196,13 @@ def migrate_data():
                 INSERT INTO chantiers (id, label, status, prepTime, endDate, preparateur_nom, ChargeRestante) 
                 VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING
             """, (
-                chantier['id'],
-                chantier['label'],
-                chantier['status'],
-                chantier['prepTime'],
-                chantier['endDate'],
-                chantier['preparateur'],
-                chantier['ChargeRestante']
+                chantier.get('id', chantier_id),
+                chantier.get('label', ''),
+                chantier.get('status', 'Nouveau'),
+                chantier.get('prepTime', 0),
+                chantier.get('endDate', ''),
+                chantier.get('preparateur', ''),
+                chantier.get('ChargeRestante', chantier.get('prepTime', 0))
             ))
             
             # Insérer les planifications du chantier
@@ -215,10 +215,19 @@ def migrate_data():
         # Insérer les disponibilités (data)
         for preparateur_nom, disponibilites in data.get('data', {}).items():
             for semaine, info in disponibilites.items():
+                # Gérer les différents formats de données
+                if isinstance(info, dict):
+                    minutes = info.get('minutes', 0)
+                    updated_at = info.get('updatedAt', '')
+                else:
+                    # Si c'est juste un nombre
+                    minutes = info if isinstance(info, (int, float)) else 0
+                    updated_at = ''
+                
                 cur.execute("""
                     INSERT INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt) 
                     VALUES (%s, %s, %s, %s)
-                """, (preparateur_nom, semaine, info['minutes'], info['updatedAt']))
+                """, (preparateur_nom, semaine, minutes, updated_at))
         
         conn.commit()
         conn.close()
@@ -232,7 +241,12 @@ def migrate_data():
         }
         
     except Exception as e:
-        return {"status": "❌ Erreur", "error": str(e)}
+        return {
+            "status": "❌ Erreur", 
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "debug_info": "Erreur lors de la migration des données"
+        }
 
 @app.get("/chantiers")
 def get_chantiers():
