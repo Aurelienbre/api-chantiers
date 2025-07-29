@@ -19,9 +19,12 @@ app.add_middleware(
 
 # --- Migration automatique JSON -> SQLite ---
 def migrate_json_to_sqlite():
+    """Migration initiale des données JSON vers SQLite - à exécuter une seule fois"""
     if not os.path.exists(DB_JSON):
         print("db.json introuvable, migration annulée.")
         return
+    
+    print("Début de la migration JSON -> SQLite...")
     with open(DB_JSON, encoding="utf-8") as f:
         db = json.load(f)
 
@@ -75,10 +78,11 @@ def migrate_json_to_sqlite():
     # Remplir disponibilites
     for nom, semaines in db.get("data", {}).items():
         for semaine, val in semaines.items():
-            cur.execute(
-                "INSERT INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt) VALUES (?, ?, ?, ?)",
-                (nom, semaine, val.get("minutes"), val.get("updatedAt"))
-            )
+            if isinstance(val, dict):  # S'assurer que val est un dictionnaire
+                cur.execute(
+                    "INSERT INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt) VALUES (?, ?, ?, ?)",
+                    (nom, semaine, val.get("minutes", 0), val.get("updatedAt"))
+                )
 
     # Remplir chantiers et planifications
     for ch_id, ch in db.get("chantiers", {}).items():
@@ -105,10 +109,16 @@ def migrate_json_to_sqlite():
     conn.close()
     print("Migration JSON -> SQLite terminée.")
 
+# Migration conditionnelle : ne migre que si SQLite n'existe pas
 if not os.path.exists(DB_SQLITE):
     migrate_json_to_sqlite()
 
 # --- Modèles Pydantic ---
+class Disponibilite(BaseModel):
+    preparateur_nom: str
+    semaine: str
+    minutes: int = 0
+    updatedAt: Optional[str] = None
 class Chantier(BaseModel):
     id: str = Field(..., example="TEST")
     label: str = Field(..., example="TEST")
@@ -118,29 +128,6 @@ class Chantier(BaseModel):
     preparateur: Optional[str] = Field(None, example="Sylvain MATHAIS")
     planification: Dict[str, Any] = Field(default_factory=dict)
     ChargeRestante: int = Field(...)
-    
-@app.get("/debug-sql")
-def debug_sql():
-    try:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT id, label, status, prepTime, endDate, preparateur_nom, ChargeRestante FROM chantiers")
-        rows = cur.fetchall()
-        chantiers = []
-
-        for row in rows:
-            chantier_id = row[0]
-            planif = get_planification_for_chantier(conn, chantier_id)
-            chantier = chantier_to_dict(row, planif)
-            chantiers.append(chantier)
-
-        conn.close()
-        return chantiers
-
-    except Exception as e:
-        return {"error": str(e)}
-
-
 
 class ChantierUpdate(BaseModel):
     label: Optional[str]
@@ -177,30 +164,13 @@ def get_planification_for_chantier(conn, chantier_id):
 def get_chantiers():
     conn = get_db()
     cur = conn.cursor()
-
-    # 1️⃣ Récupération des chantiers + planification
     cur.execute("SELECT id, label, status, prepTime, endDate, preparateur_nom, ChargeRestante FROM chantiers")
     chantiers = {}
     for row in cur.fetchall():
         planif = get_planification_for_chantier(conn, row[0])
         chantiers[row[0]] = chantier_to_dict(row, planif)
-
-    # 2️⃣ Récupération des préparateurs
-    cur.execute("SELECT nom, nni FROM preparateurs")
-    preparateurs = {nom: {"nni": nni, "disponibilites": {}} for nom, nni in cur.fetchall()}
-
-    # 3️⃣ Ajout des disponibilités hebdomadaires par préparateur
-    cur.execute("SELECT preparateur_nom, semaine, minutes FROM disponibilites")
-    for nom, semaine, minutes in cur.fetchall():
-        if nom in preparateurs:
-            preparateurs[nom]["disponibilites"][semaine] = minutes
-
     conn.close()
-
-    return {
-        "chantiers": chantiers,
-        "preparateurs": preparateurs
-    }
+    return chantiers
 
 @app.post("/ajouter", status_code=201)
 def ajouter_chantier(chantier: Chantier):
@@ -292,3 +262,77 @@ def cloturer_chantier(payload: Dict[str, str]):
     conn.commit()
     conn.close()
     return {"message": f"Chantier {ch_id} clôturé."}
+
+@app.get("/preparateurs")
+def get_preparateurs():
+    """Récupère tous les préparateurs"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT nom, nni FROM preparateurs")
+    preparateurs = {nom: nni for nom, nni in cur.fetchall()}
+    conn.close()
+    return preparateurs
+
+@app.get("/disponibilites")
+def get_disponibilites():
+    """Récupère toutes les disponibilités"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT preparateur_nom, semaine, minutes, updatedAt FROM disponibilites")
+    disponibilites = {}
+    for nom, semaine, minutes, updated_at in cur.fetchall():
+        if nom not in disponibilites:
+            disponibilites[nom] = {}
+        disponibilites[nom][semaine] = {
+            "minutes": minutes,
+            "updatedAt": updated_at
+        }
+    conn.close()
+    return disponibilites
+
+@app.put("/disponibilites")
+def update_disponibilite(dispo: Disponibilite):
+    """Met à jour une disponibilité"""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    # Vérifier que le préparateur existe
+    cur.execute("SELECT 1 FROM preparateurs WHERE nom = ?", (dispo.preparateur_nom,))
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Préparateur introuvable")
+    
+    # Insérer ou mettre à jour la disponibilité
+    cur.execute("""
+        INSERT OR REPLACE INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt) 
+        VALUES (?, ?, ?, datetime('now'))
+    """, (dispo.preparateur_nom, dispo.semaine, dispo.minutes))
+    
+    conn.commit()
+    conn.close()
+    return {"message": f"Disponibilité mise à jour pour {dispo.preparateur_nom} semaine {dispo.semaine}"}
+
+@app.delete("/chantiers/{ch_id}")
+def delete_chantier(ch_id: str):
+    """Supprime un chantier et ses planifications"""
+    conn = get_db()
+    cur = conn.cursor()
+    
+    # Vérifier que le chantier existe
+    cur.execute("SELECT 1 FROM chantiers WHERE id = ?", (ch_id,))
+    if not cur.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="Chantier introuvable")
+    
+    # Supprimer les planifications puis le chantier
+    cur.execute("DELETE FROM planifications WHERE chantier_id = ?", (ch_id,))
+    cur.execute("DELETE FROM chantiers WHERE id = ?", (ch_id,))
+    
+    conn.commit()
+    conn.close()
+    return {"message": f"Chantier {ch_id} supprimé"}
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
