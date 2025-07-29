@@ -156,10 +156,64 @@ def migrate_data():
         conn.commit() 
         conn.close()
         
+        # Charger et migrer les données db.json
+        try:
+            with open('API/db.json', 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            # Si db.json n'existe pas localement, créer des données de test
+            data = {
+                "preparateurs": {
+                    "Eric CHAPUIS": "F51742",
+                    "Sylvain MATHAIS": "H13773"
+                },
+                "chantiers": {},
+                "data": {}
+            }
+        
+        # Insérer les préparateurs
+        for nom, nni in data.get('preparateurs', {}).items():
+            cur.execute("INSERT INTO preparateurs (nom, nni) VALUES (%s, %s) ON CONFLICT (nom) DO NOTHING", (nom, nni))
+        
+        # Insérer les chantiers
+        for chantier_id, chantier in data.get('chantiers', {}).items():
+            cur.execute("""
+                INSERT INTO chantiers (id, label, status, prepTime, endDate, preparateur_nom, ChargeRestante) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING
+            """, (
+                chantier['id'],
+                chantier['label'],
+                chantier['status'],
+                chantier['prepTime'],
+                chantier['endDate'],
+                chantier['preparateur'],
+                chantier['ChargeRestante']
+            ))
+            
+            # Insérer les planifications du chantier
+            for semaine, minutes in chantier.get('planification', {}).items():
+                cur.execute("""
+                    INSERT INTO planifications (chantier_id, semaine, minutes) 
+                    VALUES (%s, %s, %s)
+                """, (chantier['id'], semaine, minutes))
+        
+        # Insérer les disponibilités (data)
+        for preparateur_nom, disponibilites in data.get('data', {}).items():
+            for semaine, info in disponibilites.items():
+                cur.execute("""
+                    INSERT INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt) 
+                    VALUES (%s, %s, %s, %s)
+                """, (preparateur_nom, semaine, info['minutes'], info['updatedAt']))
+        
+        conn.commit()
+        conn.close()
+        
         return {
-            "status": "✅ Tables créées !",
-            "message": "Migration des structures terminée",
-            "next_step": "Les tables sont prêtes pour les données"
+            "status": "✅ Migration complète !",
+            "message": "Tables créées et données migrées",
+            "preparateurs": len(data.get('preparateurs', {})),
+            "chantiers": len(data.get('chantiers', {})),
+            "next_step": "API prête à fonctionner !"
         }
         
     except Exception as e:
@@ -167,15 +221,104 @@ def migrate_data():
 
 @app.get("/chantiers")
 def get_chantiers():
-    return {"message": "Endpoint chantiers - temporaire sans base de données"}
+    """Récupérer tous les chantiers depuis PostgreSQL"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT c.id, c.label, c.status, c.prepTime, c.endDate, c.preparateur_nom, c.ChargeRestante,
+                   p.chantier_id, p.semaine, p.minutes
+            FROM chantiers c
+            LEFT JOIN planifications p ON c.id = p.chantier_id
+            ORDER BY c.id, p.semaine
+        """)
+        
+        rows = cur.fetchall()
+        conn.close()
+        
+        # Regrouper les résultats par chantier
+        chantiers = {}
+        for row in rows:
+            chantier_id = row[0]
+            if chantier_id not in chantiers:
+                chantiers[chantier_id] = {
+                    "id": row[0],
+                    "label": row[1],
+                    "status": row[2],
+                    "prepTime": row[3],
+                    "endDate": row[4],
+                    "preparateur": row[5],
+                    "ChargeRestante": row[6],
+                    "planification": {}
+                }
+            
+            # Ajouter la planification si elle existe
+            if row[8] and row[9]:  # semaine et minutes
+                chantiers[chantier_id]["planification"][row[8]] = row[9]
+        
+        return chantiers
+        
+    except Exception as e:
+        return {"error": f"Erreur base de données: {str(e)}"}
 
 @app.get("/preparateurs")
 def get_preparateurs():
-    return {"message": "Endpoint preparateurs - temporaire sans base de données"}
+    """Récupérer tous les préparateurs depuis PostgreSQL"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        cur.execute("SELECT nom, nni FROM preparateurs ORDER BY nom")
+        rows = cur.fetchall()
+        conn.close()
+        
+        # Convertir en dictionnaire nom -> nni
+        preparateurs = {row[0]: row[1] for row in rows}
+        
+        return preparateurs
+        
+    except Exception as e:
+        return {"error": f"Erreur base de données: {str(e)}"}
 
 @app.get("/disponibilites")
 def get_disponibilites():
-    return {"message": "Endpoint disponibilites - temporaire sans base de données"}
+    """Récupérer toutes les disponibilités depuis PostgreSQL"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT preparateur_nom, semaine, minutes, updatedAt 
+            FROM disponibilites 
+            ORDER BY preparateur_nom, semaine
+        """)
+        
+        rows = cur.fetchall()
+        conn.close()
+        
+        # Regrouper par préparateur
+        disponibilites = {}
+        for row in rows:
+            preparateur = row[0]
+            if preparateur not in disponibilites:
+                disponibilites[preparateur] = {}
+            
+            disponibilites[preparateur][row[1]] = {
+                "minutes": row[2],
+                "updatedAt": row[3]
+            }
+        
+        return {"data": disponibilites}
+        
+    except Exception as e:
+        return {"error": f"Erreur base de données: {str(e)}"}
 
 if __name__ == "__main__":
     import uvicorn
