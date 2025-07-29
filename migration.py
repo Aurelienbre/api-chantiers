@@ -49,7 +49,7 @@ def create_tables():
             FOREIGN KEY (chantier_id) REFERENCES chantiers(id)
         );
         """)
-    else:  # SQLite
+    else:  # SQLite - PAS de CASCADE !
         cur.execute("""
         DROP TABLE IF EXISTS disponibilites;
         DROP TABLE IF EXISTS planifications;
