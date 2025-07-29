@@ -36,13 +36,7 @@ def chantier_to_dict(row, planif=None):
 
 def get_planification_for_chantier(conn, chantier_id):
     cur = conn.cursor()
-    database_url = os.environ.get('DATABASE_URL')
-    
-    if database_url:  # PostgreSQL
-        cur.execute("SELECT semaine, minutes FROM planifications WHERE chantier_id = %s", (chantier_id,))
-    else:  # SQLite
-        cur.execute("SELECT semaine, minutes FROM planifications WHERE chantier_id = ?", (chantier_id,))
-    
+    cur.execute("SELECT semaine, minutes FROM planifications WHERE chantier_id = %s", (chantier_id,))
     return {semaine: minutes for semaine, minutes in cur.fetchall()}
 
 # --- Endpoints FastAPI (lecture seule) ---
