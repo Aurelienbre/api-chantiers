@@ -315,6 +315,72 @@ def get_preparateurs():
     except Exception as e:
         return {"error": f"Erreur base de données: {str(e)}"}
 
+@app.post("/preparateurs")
+def sync_preparateurs(preparateurs_data: Dict[str, Any]):
+    """Synchroniser les préparateurs avec PostgreSQL"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        preparateurs = preparateurs_data.get('preparateurs', {})
+        synced_count = 0
+        
+        # Insérer ou mettre à jour chaque préparateur
+        for nom, nni in preparateurs.items():
+            cur.execute("""
+                INSERT INTO preparateurs (nom, nni) 
+                VALUES (%s, %s) 
+                ON CONFLICT (nom) DO UPDATE SET nni = EXCLUDED.nni
+            """, (nom, nni))
+            synced_count += 1
+        
+        conn.commit()
+        conn.close()
+        
+        return {"status": "✅ Préparateurs synchronisés", "count": synced_count}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
+@app.delete("/preparateurs/{nom}")
+def delete_preparateur(nom: str):
+    """Supprimer un préparateur de PostgreSQL"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Supprimer d'abord les disponibilités liées à ce préparateur
+        cur.execute("DELETE FROM disponibilites WHERE preparateur_nom = %s", (nom,))
+        disponibilites_deleted = cur.rowcount
+        
+        # Supprimer le préparateur
+        cur.execute("DELETE FROM preparateurs WHERE nom = %s", (nom,))
+        preparateur_deleted = cur.rowcount
+        
+        # Mettre les chantiers assignés à ce préparateur comme non-assignés
+        cur.execute("UPDATE chantiers SET preparateur_nom = NULL WHERE preparateur_nom = %s", (nom,))
+        chantiers_updated = cur.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        if preparateur_deleted > 0:
+            return {
+                "status": "✅ Préparateur supprimé", 
+                "nom": nom,
+                "disponibilites_supprimees": disponibilites_deleted,
+                "chantiers_mis_a_jour": chantiers_updated
+            }
+        else:
+            return {"status": "⚠️ Préparateur non trouvé", "nom": nom}
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
 @app.get("/disponibilites")
 def get_disponibilites():
     """Récupérer toutes les disponibilités depuis PostgreSQL"""
