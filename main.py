@@ -1,5 +1,7 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Dict, Optional
 import os
 
 app = FastAPI()
@@ -9,6 +11,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Modèles Pydantic pour les endpoints
+class ChantierCreate(BaseModel):
+    id: str
+    label: str
+    status: str
+    prepTime: int
+    endDate: str
+    preparateur: Optional[str] = None
+    ChargeRestante: Optional[int] = None
+
+class ChantierUpdate(BaseModel):
+    label: Optional[str] = None
+    status: Optional[str] = None
+    prepTime: Optional[int] = None
+    endDate: Optional[str] = None
+    preparateur: Optional[str] = None
+    ChargeRestante: Optional[int] = None
+
+class PlanificationUpdate(BaseModel):
+    chantier_id: str
+    planifications: Dict[str, int]  # semaine -> minutes
+
+class DisponibiliteUpdate(BaseModel):
+    preparateur_nom: str
+    disponibilites: Dict[str, Dict[str, any]]  # semaine -> {minutes, updatedAt}
 
 @app.get("/")
 def read_root():
@@ -348,6 +376,221 @@ def get_disponibilites():
         
     except Exception as e:
         return {"error": f"Erreur base de données: {str(e)}"}
+
+# ===== ENDPOINTS CRUD POUR CHANTIERS =====
+
+@app.post("/chantiers")
+def create_chantier(chantier: ChantierCreate):
+    """Créer un nouveau chantier dans PostgreSQL"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Insérer le chantier
+        cur.execute("""
+            INSERT INTO chantiers (id, label, status, prepTime, endDate, preparateur_nom, ChargeRestante) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO UPDATE SET
+                label = EXCLUDED.label,
+                status = EXCLUDED.status,
+                prepTime = EXCLUDED.prepTime,
+                endDate = EXCLUDED.endDate,
+                preparateur_nom = EXCLUDED.preparateur_nom,
+                ChargeRestante = EXCLUDED.ChargeRestante
+        """, (
+            chantier.id,
+            chantier.label,
+            chantier.status,
+            chantier.prepTime,
+            chantier.endDate,
+            chantier.preparateur,
+            chantier.ChargeRestante or chantier.prepTime
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        return {"status": "✅ Chantier créé/mis à jour", "id": chantier.id}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
+@app.put("/chantiers/{chantier_id}")
+def update_chantier(chantier_id: str, chantier: ChantierUpdate):
+    """Mettre à jour un chantier existant"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Construire la requête dynamiquement selon les champs fournis
+        updates = []
+        params = []
+        
+        if chantier.label is not None:
+            updates.append("label = %s")
+            params.append(chantier.label)
+        if chantier.status is not None:
+            updates.append("status = %s")
+            params.append(chantier.status)
+        if chantier.prepTime is not None:
+            updates.append("prepTime = %s")
+            params.append(chantier.prepTime)
+        if chantier.endDate is not None:
+            updates.append("endDate = %s")
+            params.append(chantier.endDate)
+        if chantier.preparateur is not None:
+            updates.append("preparateur_nom = %s")
+            params.append(chantier.preparateur)
+        if chantier.ChargeRestante is not None:
+            updates.append("ChargeRestante = %s")
+            params.append(chantier.ChargeRestante)
+        
+        if not updates:
+            return {"status": "⚠️ Aucune modification fournie"}
+        
+        params.append(chantier_id)
+        query = f"UPDATE chantiers SET {', '.join(updates)} WHERE id = %s"
+        
+        cur.execute(query, params)
+        
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Chantier non trouvé")
+        
+        conn.commit()
+        conn.close()
+        
+        return {"status": "✅ Chantier mis à jour", "id": chantier_id}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
+@app.put("/planification")
+def update_planification(planif: PlanificationUpdate):
+    """Mettre à jour la planification d'un chantier"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Supprimer l'ancienne planification pour ce chantier
+        cur.execute("DELETE FROM planifications WHERE chantier_id = %s", (planif.chantier_id,))
+        
+        # Insérer la nouvelle planification
+        for semaine, minutes in planif.planifications.items():
+            if minutes > 0:  # Ne stocker que les planifications non nulles
+                cur.execute("""
+                    INSERT INTO planifications (chantier_id, semaine, minutes) 
+                    VALUES (%s, %s, %s)
+                """, (planif.chantier_id, semaine, minutes))
+        
+        conn.commit()
+        conn.close()
+        
+        return {"status": "✅ Planification mise à jour", "chantier_id": planif.chantier_id}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
+@app.put("/disponibilites")
+def update_disponibilites(dispo: DisponibiliteUpdate):
+    """Mettre à jour les disponibilités d'un préparateur"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Supprimer les anciennes disponibilités pour ce préparateur
+        cur.execute("DELETE FROM disponibilites WHERE preparateur_nom = %s", (dispo.preparateur_nom,))
+        
+        # Insérer les nouvelles disponibilités
+        for semaine, info in dispo.disponibilites.items():
+            minutes = info.get('minutes', 0) if isinstance(info, dict) else info
+            updated_at = info.get('updatedAt', '') if isinstance(info, dict) else ''
+            
+            if minutes > 0:  # Ne stocker que les disponibilités non nulles
+                cur.execute("""
+                    INSERT INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt) 
+                    VALUES (%s, %s, %s, %s)
+                """, (dispo.preparateur_nom, semaine, minutes, updated_at))
+        
+        conn.commit()
+        conn.close()
+        
+        return {"status": "✅ Disponibilités mises à jour", "preparateur": dispo.preparateur_nom}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
+@app.put("/sync-planning")
+def sync_complete_planning(data: dict):
+    """Synchronisation complète de la planification après répartition automatique"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Mettre à jour tous les chantiers
+        if 'chantiers' in data:
+            for chantier_id, chantier_data in data['chantiers'].items():
+                # Mettre à jour le chantier principal
+                cur.execute("""
+                    UPDATE chantiers SET 
+                        label = %s, status = %s, prepTime = %s, 
+                        endDate = %s, preparateur_nom = %s, ChargeRestante = %s
+                    WHERE id = %s
+                """, (
+                    chantier_data.get('label', ''),
+                    chantier_data.get('status', 'Nouveau'),
+                    chantier_data.get('prepTime', 0),
+                    chantier_data.get('endDate', ''),
+                    chantier_data.get('preparateur'),
+                    chantier_data.get('ChargeRestante', chantier_data.get('prepTime', 0)),
+                    chantier_id
+                ))
+                
+                # Supprimer l'ancienne planification
+                cur.execute("DELETE FROM planifications WHERE chantier_id = %s", (chantier_id,))
+                
+                # Insérer la nouvelle planification
+                planification = chantier_data.get('planification', {})
+                for semaine, minutes in planification.items():
+                    if minutes > 0:
+                        cur.execute("""
+                            INSERT INTO planifications (chantier_id, semaine, minutes) 
+                            VALUES (%s, %s, %s)
+                        """, (chantier_id, semaine, minutes))
+        
+        # Mettre à jour les disponibilités
+        if 'data' in data:
+            for preparateur_nom, disponibilites in data['data'].items():
+                # Supprimer les anciennes disponibilités
+                cur.execute("DELETE FROM disponibilites WHERE preparateur_nom = %s", (preparateur_nom,))
+                
+                # Insérer les nouvelles disponibilités
+                for semaine, info in disponibilites.items():
+                    minutes = info.get('minutes', 0) if isinstance(info, dict) else info
+                    updated_at = info.get('updatedAt', '') if isinstance(info, dict) else ''
+                    
+                    if minutes > 0:
+                        cur.execute("""
+                            INSERT INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt) 
+                            VALUES (%s, %s, %s, %s)
+                        """, (preparateur_nom, semaine, minutes, updated_at))
+        
+        conn.commit()
+        conn.close()
+        
+        return {"status": "✅ Planification complète synchronisée"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
