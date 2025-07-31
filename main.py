@@ -407,17 +407,30 @@ def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
             if cur.fetchone():
                 raise HTTPException(status_code=409, detail=f"Le préparateur '{nouveau_nom}' existe déjà")
         
-        # 1. D'ABORD mettre à jour le préparateur lui-même
-        cur.execute("UPDATE preparateurs SET nom = %s, nni = %s WHERE nom = %s", (nouveau_nom, nouveau_nni, ancien_nom))
-        preparateur_updated = cur.rowcount
+        # ⚠️ Pour contourner les contraintes de clé étrangère, on doit d'abord 
+        # créer le nouveau préparateur, puis supprimer l'ancien
         
-        # 2. ENSUITE mettre à jour les chantiers (maintenant que le nouveau nom existe)
-        cur.execute("UPDATE chantiers SET preparateur_nom = %s WHERE preparateur_nom = %s", (nouveau_nom, ancien_nom))
-        chantiers_updated = cur.rowcount
-        
-        # 3. Enfin mettre à jour les disponibilités
-        cur.execute("UPDATE disponibilites SET preparateur_nom = %s WHERE preparateur_nom = %s", (nouveau_nom, ancien_nom))
-        disponibilites_updated = cur.rowcount
+        if ancien_nom != nouveau_nom:
+            # 1. Créer le nouveau préparateur
+            cur.execute("INSERT INTO preparateurs (nom, nni) VALUES (%s, %s)", (nouveau_nom, nouveau_nni))
+            
+            # 2. Mettre à jour les chantiers pour pointer vers le nouveau préparateur
+            cur.execute("UPDATE chantiers SET preparateur_nom = %s WHERE preparateur_nom = %s", (nouveau_nom, ancien_nom))
+            chantiers_updated = cur.rowcount
+            
+            # 3. Mettre à jour les disponibilités pour pointer vers le nouveau préparateur
+            cur.execute("UPDATE disponibilites SET preparateur_nom = %s WHERE preparateur_nom = %s", (nouveau_nom, ancien_nom))
+            disponibilites_updated = cur.rowcount
+            
+            # 4. Supprimer l'ancien préparateur (maintenant plus référencé)
+            cur.execute("DELETE FROM preparateurs WHERE nom = %s", (ancien_nom,))
+            preparateur_updated = cur.rowcount
+        else:
+            # Si seul le NNI change, mise à jour simple
+            cur.execute("UPDATE preparateurs SET nni = %s WHERE nom = %s", (nouveau_nni, ancien_nom))
+            preparateur_updated = cur.rowcount
+            chantiers_updated = 0
+            disponibilites_updated = 0
         
         conn.commit()
         conn.close()
