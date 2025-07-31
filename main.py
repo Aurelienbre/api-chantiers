@@ -407,17 +407,17 @@ def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
             if cur.fetchone():
                 raise HTTPException(status_code=409, detail=f"Le préparateur '{nouveau_nom}' existe déjà")
         
-        # 1. Mettre à jour les chantiers AVANT de changer le préparateur
+        # 1. D'ABORD mettre à jour le préparateur lui-même
+        cur.execute("UPDATE preparateurs SET nom = %s, nni = %s WHERE nom = %s", (nouveau_nom, nouveau_nni, ancien_nom))
+        preparateur_updated = cur.rowcount
+        
+        # 2. ENSUITE mettre à jour les chantiers (maintenant que le nouveau nom existe)
         cur.execute("UPDATE chantiers SET preparateur_nom = %s WHERE preparateur_nom = %s", (nouveau_nom, ancien_nom))
         chantiers_updated = cur.rowcount
         
-        # 2. Mettre à jour les disponibilités
+        # 3. Enfin mettre à jour les disponibilités
         cur.execute("UPDATE disponibilites SET preparateur_nom = %s WHERE preparateur_nom = %s", (nouveau_nom, ancien_nom))
         disponibilites_updated = cur.rowcount
-        
-        # 3. Mettre à jour le préparateur lui-même
-        cur.execute("UPDATE preparateurs SET nom = %s, nni = %s WHERE nom = %s", (nouveau_nom, nouveau_nni, ancien_nom))
-        preparateur_updated = cur.rowcount
         
         conn.commit()
         conn.close()
