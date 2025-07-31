@@ -381,6 +381,59 @@ def delete_preparateur(nom: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
 
+@app.put("/preparateurs/{ancien_nom}")
+def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
+    """Modifier un préparateur (nom et/ou NNI) avec mise à jour en cascade"""
+    try:
+        from database_config import get_database_connection
+        
+        nouveau_nom = preparateur_data.get('nom', ancien_nom)
+        nouveau_nni = preparateur_data.get('nni')
+        
+        if not nouveau_nni:
+            raise HTTPException(status_code=400, detail="NNI requis")
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Vérifier que l'ancien préparateur existe
+        cur.execute("SELECT nom FROM preparateurs WHERE nom = %s", (ancien_nom,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail=f"Préparateur '{ancien_nom}' non trouvé")
+        
+        # Si le nom change, vérifier que le nouveau nom n'existe pas déjà
+        if ancien_nom != nouveau_nom:
+            cur.execute("SELECT nom FROM preparateurs WHERE nom = %s", (nouveau_nom,))
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail=f"Le préparateur '{nouveau_nom}' existe déjà")
+        
+        # 1. Mettre à jour les chantiers AVANT de changer le préparateur
+        cur.execute("UPDATE chantiers SET preparateur_nom = %s WHERE preparateur_nom = %s", (nouveau_nom, ancien_nom))
+        chantiers_updated = cur.rowcount
+        
+        # 2. Mettre à jour les disponibilités
+        cur.execute("UPDATE disponibilites SET preparateur_nom = %s WHERE preparateur_nom = %s", (nouveau_nom, ancien_nom))
+        disponibilites_updated = cur.rowcount
+        
+        # 3. Mettre à jour le préparateur lui-même
+        cur.execute("UPDATE preparateurs SET nom = %s, nni = %s WHERE nom = %s", (nouveau_nom, nouveau_nni, ancien_nom))
+        preparateur_updated = cur.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "status": "✅ Préparateur modifié avec succès",
+            "ancien_nom": ancien_nom,
+            "nouveau_nom": nouveau_nom,
+            "nouveau_nni": nouveau_nni,
+            "chantiers_mis_a_jour": chantiers_updated,
+            "disponibilites_mises_a_jour": disponibilites_updated
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
 @app.get("/disponibilites")
 def get_disponibilites():
     """Récupérer toutes les disponibilités depuis PostgreSQL"""
