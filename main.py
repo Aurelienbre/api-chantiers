@@ -336,6 +336,7 @@ def migrate_forced_planning():
 @app.get("/chantiers")
 def get_chantiers():
     """Récupérer tous les chantiers depuis PostgreSQL"""
+    conn = None
     try:
         from database_config import get_database_connection
         
@@ -415,11 +416,17 @@ def get_chantiers():
                 if row[8] and row[9]:  # semaine et minutes (décalé car pas de forced_planning_lock)
                     chantiers[chantier_id]["planification"][row[8]] = row[9]
         
-        conn.close()
         return chantiers
         
     except Exception as e:
+        print(f"🚨 Erreur GET /chantiers: {str(e)}")
         return {"error": f"Erreur base de données: {str(e)}"}
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 @app.get("/preparateurs")
 def get_preparateurs():
@@ -971,6 +978,7 @@ def sync_forced_planning_lock_put(lock_data: Dict[str, Any]):
 @app.post("/forced-planning-lock")
 def sync_forced_planning_lock(lock_data: Dict[str, Any]):
     """Synchroniser les verrous de planification forcée depuis le client (méthode POST)"""
+    conn = None
     try:
         from database_config import get_database_connection
         import json
@@ -993,6 +1001,7 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
         column_exists = cur.fetchone()
         
         if not column_exists:
+            print("🔧 Migration automatique: Ajout de la colonne forced_planning_lock")
             # Ajouter la colonne forced_planning_lock si elle n'existe pas
             cur.execute("""
                 ALTER TABLE chantiers 
@@ -1006,6 +1015,7 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
             """)
             
             conn.commit()
+            print("✅ Migration automatique réussie")
         
         # Vérifier que le chantier existe
         cur.execute("SELECT id FROM chantiers WHERE id = %s", (chantier_id,))
@@ -1023,7 +1033,8 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
         """, (lock_json, chantier_id))
         
         conn.commit()
-        conn.close()
+        
+        print(f"✅ Verrous synchronisés pour {chantier_id}: {len(forced_planning_lock)} segments")
         
         return {
             "status": "✅ Verrous de planification forcée synchronisés",
@@ -1032,7 +1043,14 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
         }
         
     except Exception as e:
+        print(f"🚨 Erreur POST /forced-planning-lock: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 if __name__ == "__main__":
     import uvicorn
