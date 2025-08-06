@@ -160,6 +160,36 @@ def migrate_data():
             """)
             conn.commit()
         
+        # Migration des verrous de planification forcée (pour les bases existantes)
+        try:
+            # Vérifier si la colonne forced_planning_lock existe déjà
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name = 'chantiers' AND column_name = 'forced_planning_lock'
+            """)
+            column_exists = cur.fetchone()
+            
+            if not column_exists:
+                # Ajouter la colonne forced_planning_lock aux bases existantes
+                cur.execute("""
+                    ALTER TABLE chantiers 
+                    ADD COLUMN forced_planning_lock JSONB DEFAULT NULL
+                """)
+                
+                # Créer l'index GIN pour améliorer les performances sur les requêtes JSON
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_chantiers_forced_planning_lock 
+                    ON chantiers USING GIN (forced_planning_lock)
+                """)
+                
+                conn.commit()
+                print("✅ Migration: Colonne forced_planning_lock ajoutée aux chantiers existants")
+            
+        except Exception as e:
+            print(f"⚠️ Avertissement migration verrous: {e}")
+            # Ne pas faire échouer toute la migration pour cette erreur
+        
         # Charger et migrer les données db.json
         try:
             # Essayer plusieurs chemins possibles pour db.json
@@ -250,6 +280,59 @@ def migrate_data():
             "debug_info": "Erreur lors de la migration des données"
         }
 
+@app.get("/migrate-forced-planning")
+def migrate_forced_planning():
+    """Migration spécifique pour ajouter le support des verrous de planification forcée"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Vérifier si la colonne forced_planning_lock existe déjà
+        cur.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'chantiers' AND column_name = 'forced_planning_lock'
+        """)
+        column_exists = cur.fetchone()
+        
+        if column_exists:
+            conn.close()
+            return {
+                "status": "✅ Migration déjà effectuée", 
+                "message": "La colonne forced_planning_lock existe déjà"
+            }
+        
+        # Ajouter la colonne forced_planning_lock aux bases existantes
+        cur.execute("""
+            ALTER TABLE chantiers 
+            ADD COLUMN forced_planning_lock JSONB DEFAULT NULL
+        """)
+        
+        # Créer l'index GIN pour améliorer les performances sur les requêtes JSON
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chantiers_forced_planning_lock 
+            ON chantiers USING GIN (forced_planning_lock)
+        """)
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "status": "✅ Migration réussie !",
+            "message": "Colonne forced_planning_lock ajoutée avec succès",
+            "next_step": "Les verrous de planification forcée sont maintenant disponibles"
+        }
+        
+    except Exception as e:
+        return {
+            "status": "❌ Erreur migration", 
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "debug_info": "Erreur lors de la migration des verrous"
+        }
+
 @app.get("/chantiers")
 def get_chantiers():
     """Récupérer tous les chantiers depuis PostgreSQL"""
@@ -259,38 +342,80 @@ def get_chantiers():
         conn = get_database_connection()
         cur = conn.cursor()
         
+        # Vérifier si la colonne forced_planning_lock existe
         cur.execute("""
-            SELECT c.id, c.label, c.status, c.prepTime, c.endDate, c.preparateur_nom, c.ChargeRestante,
-                   c.forced_planning_lock, p.chantier_id, p.semaine, p.minutes
-            FROM chantiers c
-            LEFT JOIN planifications p ON c.id = p.chantier_id
-            ORDER BY c.id, p.semaine
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'chantiers' AND column_name = 'forced_planning_lock'
         """)
+        column_exists = cur.fetchone()
         
-        rows = cur.fetchall()
-        conn.close()
-        
-        # Regrouper les résultats par chantier
-        chantiers = {}
-        for row in rows:
-            chantier_id = row[0]
-            if chantier_id not in chantiers:
-                chantiers[chantier_id] = {
-                    "id": row[0],
-                    "label": row[1],
-                    "status": row[2],
-                    "prepTime": row[3],
-                    "endDate": row[4],
-                    "preparateur": row[5],
-                    "ChargeRestante": row[6],
-                    "forcedPlanningLock": row[7] or {},
-                    "planification": {}
-                }
+        if column_exists:
+            # La colonne existe, requête complète
+            cur.execute("""
+                SELECT c.id, c.label, c.status, c.prepTime, c.endDate, c.preparateur_nom, c.ChargeRestante,
+                       c.forced_planning_lock, p.chantier_id, p.semaine, p.minutes
+                FROM chantiers c
+                LEFT JOIN planifications p ON c.id = p.chantier_id
+                ORDER BY c.id, p.semaine
+            """)
             
-            # Ajouter la planification si elle existe
-            if row[9] and row[10]:  # semaine et minutes
-                chantiers[chantier_id]["planification"][row[9]] = row[10]
+            rows = cur.fetchall()
+            
+            # Regrouper les résultats par chantier (avec verrous)
+            chantiers = {}
+            for row in rows:
+                chantier_id = row[0]
+                if chantier_id not in chantiers:
+                    chantiers[chantier_id] = {
+                        "id": row[0],
+                        "label": row[1],
+                        "status": row[2],
+                        "prepTime": row[3],
+                        "endDate": row[4],
+                        "preparateur": row[5],
+                        "ChargeRestante": row[6],
+                        "forcedPlanningLock": row[7] or {},
+                        "planification": {}
+                    }
+                
+                # Ajouter la planification si elle existe
+                if row[9] and row[10]:  # semaine et minutes
+                    chantiers[chantier_id]["planification"][row[9]] = row[10]
+        else:
+            # La colonne n'existe pas encore, requête sans forced_planning_lock
+            cur.execute("""
+                SELECT c.id, c.label, c.status, c.prepTime, c.endDate, c.preparateur_nom, c.ChargeRestante,
+                       p.chantier_id, p.semaine, p.minutes
+                FROM chantiers c
+                LEFT JOIN planifications p ON c.id = p.chantier_id
+                ORDER BY c.id, p.semaine
+            """)
+            
+            rows = cur.fetchall()
+            
+            # Regrouper les résultats par chantier (sans verrous)
+            chantiers = {}
+            for row in rows:
+                chantier_id = row[0]
+                if chantier_id not in chantiers:
+                    chantiers[chantier_id] = {
+                        "id": row[0],
+                        "label": row[1],
+                        "status": row[2],
+                        "prepTime": row[3],
+                        "endDate": row[4],
+                        "preparateur": row[5],
+                        "ChargeRestante": row[6],
+                        "forcedPlanningLock": {},  # Valeur par défaut
+                        "planification": {}
+                    }
+                
+                # Ajouter la planification si elle existe
+                if row[8] and row[9]:  # semaine et minutes (décalé car pas de forced_planning_lock)
+                    chantiers[chantier_id]["planification"][row[8]] = row[9]
         
+        conn.close()
         return chantiers
         
     except Exception as e:
