@@ -1052,6 +1052,88 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
             except:
                 pass
 
+@app.get("/debug-locks")
+def debug_forced_planning_locks():
+    """DEBUG: Voir tous les verrous de planification forcée"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Récupérer tous les chantiers avec leurs verrous
+        cur.execute("""
+            SELECT id, label, forced_planning_lock 
+            FROM chantiers 
+            WHERE forced_planning_lock IS NOT NULL 
+            AND forced_planning_lock != 'null'
+            AND forced_planning_lock != '{}'
+        """)
+        
+        rows = cur.fetchall()
+        
+        locks_info = []
+        for row in rows:
+            locks_info.append({
+                "chantier_id": row[0],
+                "label": row[1],
+                "forced_planning_lock": row[2]
+            })
+        
+        return {
+            "status": "✅ Debug verrous",
+            "total_locks": len(locks_info),
+            "locks": locks_info
+        }
+        
+    except Exception as e:
+        print(f"🚨 Erreur DEBUG locks: {str(e)}")
+        return {"error": f"Erreur: {str(e)}"}
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+@app.post("/clear-all-locks")
+def clear_all_forced_planning_locks():
+    """URGENCE: Supprimer TOUS les verrous de planification forcée"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Supprimer TOUS les verrous
+        cur.execute("""
+            UPDATE chantiers 
+            SET forced_planning_lock = NULL
+        """)
+        
+        cleared_count = cur.rowcount
+        conn.commit()
+        
+        print(f"🧹 NETTOYAGE D'URGENCE: {cleared_count} verrous supprimés")
+        
+        return {
+            "status": "🧹 TOUS les verrous supprimés",
+            "cleared_count": cleared_count,
+            "message": "Base nettoyée, testez maintenant vos fonctions"
+        }
+        
+    except Exception as e:
+        print(f"🚨 Erreur CLEAR ALL locks: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
