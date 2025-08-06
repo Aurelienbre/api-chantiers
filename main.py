@@ -146,6 +146,7 @@ def migrate_data():
                 endDate TEXT,
                 preparateur_nom TEXT,
                 ChargeRestante INTEGER,
+                forced_planning_lock JSONB DEFAULT NULL,
                 FOREIGN KEY (preparateur_nom) REFERENCES preparateurs(nom)
             );
 
@@ -260,7 +261,7 @@ def get_chantiers():
         
         cur.execute("""
             SELECT c.id, c.label, c.status, c.prepTime, c.endDate, c.preparateur_nom, c.ChargeRestante,
-                   p.chantier_id, p.semaine, p.minutes
+                   c.forced_planning_lock, p.chantier_id, p.semaine, p.minutes
             FROM chantiers c
             LEFT JOIN planifications p ON c.id = p.chantier_id
             ORDER BY c.id, p.semaine
@@ -282,12 +283,13 @@ def get_chantiers():
                     "endDate": row[4],
                     "preparateur": row[5],
                     "ChargeRestante": row[6],
+                    "forcedPlanningLock": row[7] or {},
                     "planification": {}
                 }
             
             # Ajouter la planification si elle existe
-            if row[8] and row[9]:  # semaine et minutes
-                chantiers[chantier_id]["planification"][row[8]] = row[9]
+            if row[9] and row[10]:  # semaine et minutes
+                chantiers[chantier_id]["planification"][row[9]] = row[10]
         
         return chantiers
         
@@ -699,6 +701,144 @@ def sync_complete_planning(data: Dict[str, Any]):
         conn.close()
         
         return {"status": "✅ Planification complète synchronisée"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
+# ===== ENDPOINTS POUR VERROUS DE PLANIFICATION FORCÉE =====
+
+@app.get("/chantiers/{chantier_id}/forced-planning-lock")
+def get_forced_planning_lock(chantier_id: str):
+    """Récupérer les verrous de planification forcée d'un chantier"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        cur.execute("SELECT forced_planning_lock FROM chantiers WHERE id = %s", (chantier_id,))
+        row = cur.fetchone()
+        conn.close()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="Chantier non trouvé")
+        
+        return {"chantier_id": chantier_id, "forced_planning_lock": row[0] or {}}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
+@app.put("/chantiers/{chantier_id}/forced-planning-lock")
+def update_forced_planning_lock(chantier_id: str, lock_data: Dict[str, Any]):
+    """Mettre à jour les verrous de planification forcée d'un chantier"""
+    try:
+        from database_config import get_database_connection
+        import json
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Vérifier que le chantier existe
+        cur.execute("SELECT id FROM chantiers WHERE id = %s", (chantier_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Chantier non trouvé")
+        
+        # Valider et normaliser les données de verrous
+        forced_planning_lock = lock_data.get('forced_planning_lock', {})
+        
+        # Convertir en JSON pour PostgreSQL
+        lock_json = json.dumps(forced_planning_lock) if forced_planning_lock else None
+        
+        # Mettre à jour le chantier avec les nouveaux verrous
+        cur.execute("""
+            UPDATE chantiers 
+            SET forced_planning_lock = %s 
+            WHERE id = %s
+        """, (lock_json, chantier_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "status": "✅ Verrous de planification mis à jour",
+            "chantier_id": chantier_id,
+            "forced_planning_lock": forced_planning_lock
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
+@app.delete("/chantiers/{chantier_id}/forced-planning-lock")
+def clear_forced_planning_lock(chantier_id: str):
+    """Supprimer tous les verrous de planification forcée d'un chantier"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Vérifier que le chantier existe
+        cur.execute("SELECT id FROM chantiers WHERE id = %s", (chantier_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Chantier non trouvé")
+        
+        # Supprimer tous les verrous
+        cur.execute("""
+            UPDATE chantiers 
+            SET forced_planning_lock = NULL 
+            WHERE id = %s
+        """, (chantier_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "status": "✅ Verrous de planification supprimés",
+            "chantier_id": chantier_id
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
+@app.post("/forced-planning-lock")
+def sync_forced_planning_lock(lock_data: Dict[str, Any]):
+    """Synchroniser les verrous de planification forcée depuis le client"""
+    try:
+        from database_config import get_database_connection
+        import json
+        
+        chantier_id = lock_data.get('chantier_id')
+        forced_planning_lock = lock_data.get('forced_planning_lock', {})
+        
+        if not chantier_id:
+            raise HTTPException(status_code=400, detail="chantier_id requis")
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Vérifier que le chantier existe
+        cur.execute("SELECT id FROM chantiers WHERE id = %s", (chantier_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Chantier non trouvé")
+        
+        # Convertir en JSON pour PostgreSQL
+        lock_json = json.dumps(forced_planning_lock) if forced_planning_lock else None
+        
+        # Mettre à jour les verrous
+        cur.execute("""
+            UPDATE chantiers 
+            SET forced_planning_lock = %s 
+            WHERE id = %s
+        """, (lock_json, chantier_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "status": "✅ Verrous synchronisés",
+            "chantier_id": chantier_id,
+            "locked_segments": len(forced_planning_lock)
+        }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
