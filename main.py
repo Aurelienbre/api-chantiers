@@ -971,8 +971,68 @@ def sync_forced_planning_lock_put(lock_data: Dict[str, Any]):
 @app.post("/forced-planning-lock")
 def sync_forced_planning_lock(lock_data: Dict[str, Any]):
     """Synchroniser les verrous de planification forcée depuis le client (méthode POST)"""
-    # Réutiliser la logique de la méthode PUT pour compatibilité
-    return sync_forced_planning_lock_put(lock_data)
+    try:
+        from database_config import get_database_connection
+        import json
+        
+        chantier_id = lock_data.get('chantier_id')
+        forced_planning_lock = lock_data.get('forced_planning_lock', {})
+        
+        if not chantier_id:
+            raise HTTPException(status_code=400, detail="chantier_id requis")
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Migration automatique : Vérifier si la colonne forced_planning_lock existe
+        cur.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'chantiers' AND column_name = 'forced_planning_lock'
+        """)
+        column_exists = cur.fetchone()
+        
+        if not column_exists:
+            # Ajouter la colonne forced_planning_lock si elle n'existe pas
+            cur.execute("""
+                ALTER TABLE chantiers 
+                ADD COLUMN forced_planning_lock JSONB DEFAULT NULL
+            """)
+            
+            # Créer l'index GIN pour améliorer les performances
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chantiers_forced_planning_lock 
+                ON chantiers USING GIN (forced_planning_lock)
+            """)
+            
+            conn.commit()
+        
+        # Vérifier que le chantier existe
+        cur.execute("SELECT id FROM chantiers WHERE id = %s", (chantier_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Chantier non trouvé")
+        
+        # Convertir en JSON pour PostgreSQL
+        lock_json = json.dumps(forced_planning_lock) if forced_planning_lock else None
+        
+        # Mettre à jour les verrous
+        cur.execute("""
+            UPDATE chantiers 
+            SET forced_planning_lock = %s 
+            WHERE id = %s
+        """, (lock_json, chantier_id))
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "status": "✅ Verrous de planification forcée synchronisés",
+            "chantier_id": chantier_id,
+            "forced_planning_lock": forced_planning_lock
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
