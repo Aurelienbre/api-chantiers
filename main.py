@@ -925,9 +925,9 @@ def clear_forced_planning_lock(chantier_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
 
-@app.post("/forced-planning-lock")
-def sync_forced_planning_lock(lock_data: Dict[str, Any]):
-    """Synchroniser les verrous de planification forcée depuis le client"""
+@app.put("/forced-planning-lock")
+def sync_forced_planning_lock_put(lock_data: Dict[str, Any]):
+    """Synchroniser les verrous de planification forcée depuis le client (méthode PUT)"""
     try:
         from database_config import get_database_connection
         import json
@@ -967,6 +967,12 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
+@app.post("/forced-planning-lock")
+def sync_forced_planning_lock(lock_data: Dict[str, Any]):
+    """Synchroniser les verrous de planification forcée depuis le client (méthode POST)"""
+    # Réutiliser la logique de la méthode PUT pour compatibilité
+    return sync_forced_planning_lock_put(lock_data)
 
 if __name__ == "__main__":
     import uvicorn
