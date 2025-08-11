@@ -15,6 +15,10 @@ app.add_middleware(
 def read_root():
     return {"message": "API Pilotage RIP fonctionne!", "status": "✅ Version temporaire sans base de données"}
 
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
+    
 @app.get("/test-database")
 def test_database():
     """Test de connexion à la base PostgreSQL"""
