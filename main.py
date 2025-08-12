@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Optional, Any
+
 import os
 
 app = FastAPI()
@@ -1166,6 +1167,206 @@ def clear_all_forced_planning_locks():
     except Exception as e:
         print(f"🚨 Erreur CLEAR ALL locks: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+# ===== ENDPOINTS CRUD POUR SOLDES =====
+
+@app.get("/soldes/{chantier_id}")
+def get_soldes(chantier_id: str):
+    """Récupérer tous les soldes d'un chantier"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT semaine, minutes
+            FROM soldes
+            WHERE chantier_id = %s
+            ORDER BY semaine
+        """, (chantier_id,))
+        
+        soldes = {}
+        for row in cur.fetchall():
+            semaine, minutes = row
+            soldes[semaine] = minutes
+        
+        return {
+            "chantier_id": chantier_id,
+            "soldes": soldes,
+            "status": "success"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération des soldes: {str(e)}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+@app.put("/soldes")
+def update_soldes(solde_data: Dict[str, Any]):
+    """Mettre à jour les soldes d'un chantier"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        chantier_id = solde_data.get('chantier_id')
+        soldes = solde_data.get('soldes', {})
+        
+        if not chantier_id:
+            raise HTTPException(status_code=400, detail="chantier_id requis")
+        
+        # Supprimer les anciens soldes pour ce chantier
+        cur.execute("DELETE FROM soldes WHERE chantier_id = %s", (chantier_id,))
+        
+        # Insérer les nouveaux soldes
+        for semaine, minutes in soldes.items():
+            if minutes > 0:  # Ne stocker que les soldes positifs
+                cur.execute("""
+                    INSERT INTO soldes (chantier_id, semaine, minutes)
+                    VALUES (%s, %s, %s)
+                """, (chantier_id, semaine, minutes))
+        
+        conn.commit()
+        
+        return {
+            "chantier_id": chantier_id,
+            "soldes_count": len([m for m in soldes.values() if m > 0]),
+            "status": "success"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour des soldes: {str(e)}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+@app.post("/soldes")
+def create_or_update_solde(solde_data: Dict[str, Any]):
+    """Créer ou mettre à jour un solde spécifique"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        chantier_id = solde_data.get('chantier_id')
+        semaine = solde_data.get('semaine')
+        minutes = solde_data.get('minutes', 0)
+        
+        if not chantier_id or not semaine:
+            raise HTTPException(status_code=400, detail="chantier_id et semaine requis")
+        
+        if minutes <= 0:
+            # Si minutes <= 0, supprimer le solde
+            cur.execute("""
+                DELETE FROM soldes 
+                WHERE chantier_id = %s AND semaine = %s
+            """, (chantier_id, semaine))
+        else:
+            # Sinon, insérer ou mettre à jour
+            cur.execute("""
+                INSERT INTO soldes (chantier_id, semaine, minutes)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (chantier_id, semaine) 
+                DO UPDATE SET minutes = %s
+            """, (chantier_id, semaine, minutes, minutes))
+        
+        conn.commit()
+        
+        return {
+            "chantier_id": chantier_id,
+            "semaine": semaine,
+            "minutes": minutes,
+            "status": "success"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la création/mise à jour du solde: {str(e)}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+@app.delete("/soldes/{chantier_id}")
+def delete_all_soldes(chantier_id: str):
+    """Supprimer tous les soldes d'un chantier"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        cur.execute("DELETE FROM soldes WHERE chantier_id = %s", (chantier_id,))
+        deleted_count = cur.rowcount
+        
+        conn.commit()
+        
+        return {
+            "chantier_id": chantier_id,
+            "deleted_count": deleted_count,
+            "status": "success"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression des soldes: {str(e)}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+@app.delete("/soldes/{chantier_id}/{semaine}")
+def delete_solde(chantier_id: str, semaine: str):
+    """Supprimer un solde spécifique"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            DELETE FROM soldes 
+            WHERE chantier_id = %s AND semaine = %s
+        """, (chantier_id, semaine))
+        
+        deleted_count = cur.rowcount
+        conn.commit()
+        
+        return {
+            "chantier_id": chantier_id,
+            "semaine": semaine,
+            "deleted": deleted_count > 0,
+            "status": "success"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression du solde: {str(e)}")
     finally:
         if conn:
             try:
