@@ -15,10 +15,6 @@ app.add_middleware(
 def read_root():
     return {"message": "API Pilotage RIP fonctionne!", "status": "✅ Version temporaire sans base de données"}
 
-@app.get("/healthz")
-def healthz():
-    return {"ok": True}
-    
 @app.get("/test-database")
 def test_database():
     """Test de connexion à la base PostgreSQL"""
@@ -713,31 +709,70 @@ def update_chantier(chantier_id: str, chantier: Dict[str, Any]):
 
 @app.put("/planification")
 def update_planification(planif: Dict[str, Any]):
-    """Mettre à jour la planification d'un chantier"""
+    """Mettre à jour la planification d'un chantier avec préservation intelligente de l'historique"""
     try:
         from database_config import get_database_connection
+        from datetime import datetime, timedelta
+        import re
         
         conn = get_database_connection()
         cur = conn.cursor()
         
         chantier_id = planif.get('chantier_id')
         planifications = planif.get('planifications', {})
+        preserve_past = planif.get('preserve_past', True)  # Par défaut, préserver l'historique
         
-        # Supprimer l'ancienne planification pour ce chantier
-        cur.execute("DELETE FROM planifications WHERE chantier_id = %s", (chantier_id,))
+        if preserve_past:
+            # 🛡️ MODE INTELLIGENT : Préserver les semaines passées
+            
+            # Calculer la semaine courante (format: "2025-W33-1")
+            now = datetime.utcnow()
+            if now.weekday() == 6:  # Si dimanche, reculer d'un jour
+                now = now - timedelta(days=1)
+            
+            # Calculer le numéro de semaine ISO
+            year, week_num, _ = now.isocalendar()
+            current_week_key = f"{year}-W{week_num:02d}-1"
+            
+            print(f"🔍 Mode préservation activé - Semaine courante: {current_week_key}")
+            
+            # Supprimer SEULEMENT les planifications >= semaine courante
+            cur.execute("""
+                DELETE FROM planifications 
+                WHERE chantier_id = %s 
+                AND semaine >= %s
+            """, (chantier_id, current_week_key))
+            
+            deleted_count = cur.rowcount
+            print(f"📅 Planifications supprimées (>= {current_week_key}): {deleted_count}")
+            
+        else:
+            # 🗑️ MODE LEGACY : Supprimer tout (rétrocompatibilité)
+            cur.execute("DELETE FROM planifications WHERE chantier_id = %s", (chantier_id,))
+            deleted_count = cur.rowcount
+            print(f"🧹 Mode legacy - Toutes planifications supprimées: {deleted_count}")
         
-        # Insérer la nouvelle planification
+        # Insérer les nouvelles planifications
+        inserted_count = 0
         for semaine, minutes in planifications.items():
             if minutes > 0:  # Ne stocker que les planifications non nulles
                 cur.execute("""
                     INSERT INTO planifications (chantier_id, semaine, minutes) 
                     VALUES (%s, %s, %s)
                 """, (chantier_id, semaine, minutes))
+                inserted_count += 1
         
         conn.commit()
         conn.close()
         
-        return {"status": "✅ Planification mise à jour", "chantier_id": chantier_id}
+        return {
+            "status": "✅ Planification mise à jour avec préservation intelligente",
+            "chantier_id": chantier_id,
+            "mode": "preservation" if preserve_past else "legacy",
+            "current_week": current_week_key if preserve_past else None,
+            "deleted_future": deleted_count,
+            "inserted_new": inserted_count
+        }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
