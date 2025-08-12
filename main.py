@@ -334,6 +334,126 @@ def migrate_forced_planning():
             "debug_info": "Erreur lors de la migration des verrous"
         }
 
+@app.get("/migrate-soldes")
+def migrate_soldes():
+    """Migration pour créer la table des soldes de planification"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Vérifier si la table soldes existe déjà
+        cur.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_name = 'soldes'
+        """)
+        table_exists = cur.fetchone()
+        
+        if table_exists:
+            return {
+                "status": "✅ Migration déjà effectuée", 
+                "message": "La table soldes existe déjà",
+                "table_info": "Table prête à recevoir les données"
+            }
+        
+        # Création de la table soldes
+        cur.execute("""
+            CREATE TABLE soldes (
+                id SERIAL PRIMARY KEY,
+                chantier_id VARCHAR(255) NOT NULL,
+                semaine VARCHAR(20) NOT NULL,
+                minutes INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                
+                -- Contrainte d'unicité sur la combinaison chantier_id + semaine
+                CONSTRAINT unique_solde_chantier_semaine UNIQUE (chantier_id, semaine),
+                
+                -- Contraintes de validation
+                CONSTRAINT check_minutes_positive CHECK (minutes >= 0),
+                CONSTRAINT check_semaine_format CHECK (semaine ~ '^[0-9]{4}-W[0-9]{2}-1$')
+            )
+        """)
+        
+        # Index pour améliorer les performances
+        cur.execute("""
+            CREATE INDEX idx_soldes_chantier_id ON soldes (chantier_id)
+        """)
+        
+        cur.execute("""
+            CREATE INDEX idx_soldes_semaine ON soldes (semaine)
+        """)
+        
+        # Trigger pour mettre à jour updated_at automatiquement
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION update_updated_at_column()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.updated_at = CURRENT_TIMESTAMP;
+                RETURN NEW;
+            END;
+            $$ language 'plpgsql'
+        """)
+        
+        cur.execute("""
+            CREATE TRIGGER update_soldes_updated_at 
+            BEFORE UPDATE ON soldes 
+            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()
+        """)
+        
+        conn.commit()
+        
+        # Vérifier la création
+        cur.execute("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns 
+            WHERE table_name = 'soldes'
+            ORDER BY ordinal_position
+        """)
+        
+        columns = []
+        for row in cur.fetchall():
+            column_name, data_type, is_nullable = row
+            columns.append(f"{column_name}: {data_type} ({'NULL' if is_nullable == 'YES' else 'NOT NULL'})")
+        
+        return {
+            "status": "✅ Migration réussie !",
+            "message": "Table soldes créée avec succès",
+            "structure": {
+                "columns": columns,
+                "constraints": [
+                    "Unicité sur (chantier_id, semaine)",
+                    "Minutes >= 0", 
+                    "Format de semaine validé (YYYY-WXX-1)"
+                ],
+                "indexes": ["idx_soldes_chantier_id", "idx_soldes_semaine"],
+                "triggers": ["update_soldes_updated_at"]
+            },
+            "next_step": "La table soldes est maintenant prête à recevoir les données"
+        }
+        
+    except Exception as e:
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
+        return {
+            "status": "❌ Erreur migration", 
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "debug_info": "Erreur lors de la création de la table soldes"
+        }
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
 @app.get("/chantiers")
 def get_chantiers():
     """Récupérer tous les chantiers depuis PostgreSQL"""
