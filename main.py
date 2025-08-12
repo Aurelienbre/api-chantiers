@@ -1508,6 +1508,109 @@ def delete_solde(chantier_id: str, semaine: str):
             except:
                 pass
 
+@app.delete("/chantiers/{chantier_id}")
+def delete_chantier(chantier_id: str):
+    """Supprimer un chantier spécifique et toutes ses données associées"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Vérifier si le chantier existe
+        cur.execute("SELECT id FROM chantiers WHERE id = %s", (chantier_id,))
+        chantier = cur.fetchone()
+        
+        if not chantier:
+            raise HTTPException(status_code=404, detail=f"Chantier {chantier_id} non trouvé")
+        
+        # Supprimer toutes les données associées au chantier
+        # 1. Supprimer les soldes
+        cur.execute("DELETE FROM soldes WHERE chantier_id = %s", (chantier_id,))
+        soldes_deleted = cur.rowcount
+        
+        # 2. Supprimer le chantier
+        cur.execute("DELETE FROM chantiers WHERE id = %s", (chantier_id,))
+        chantier_deleted = cur.rowcount
+        
+        conn.commit()
+        
+        return {
+            "chantier_id": chantier_id,
+            "deleted": True,
+            "soldes_deleted": soldes_deleted,
+            "status": "success",
+            "message": f"Chantier {chantier_id} supprimé avec {soldes_deleted} soldes associés"
+        }
+        
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression du chantier: {str(e)}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+@app.delete("/chantiers")
+def delete_all_chantiers():
+    """Supprimer tous les chantiers et toutes leurs données associées"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Compter les éléments avant suppression
+        cur.execute("SELECT COUNT(*) FROM chantiers")
+        chantiers_count = cur.fetchone()[0]
+        
+        cur.execute("SELECT COUNT(*) FROM soldes")
+        soldes_count = cur.fetchone()[0]
+        
+        if chantiers_count == 0:
+            return {
+                "deleted": False,
+                "message": "Aucun chantier à supprimer",
+                "status": "success"
+            }
+        
+        # Supprimer toutes les données
+        # 1. Supprimer tous les soldes
+        cur.execute("DELETE FROM soldes")
+        soldes_deleted = cur.rowcount
+        
+        # 2. Supprimer tous les chantiers
+        cur.execute("DELETE FROM chantiers")
+        chantiers_deleted = cur.rowcount
+        
+        conn.commit()
+        
+        return {
+            "deleted": True,
+            "chantiers_deleted": chantiers_deleted,
+            "soldes_deleted": soldes_deleted,
+            "status": "success",
+            "message": f"Tous les chantiers supprimés ({chantiers_deleted} chantiers et {soldes_deleted} soldes)"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression de tous les chantiers: {str(e)}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
