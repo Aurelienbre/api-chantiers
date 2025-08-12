@@ -353,18 +353,20 @@ def get_chantiers():
         column_exists = cur.fetchone()
         
         if column_exists:
-            # La colonne existe, requête complète
+            # La colonne existe, requête complète avec soldes
             cur.execute("""
                 SELECT c.id, c.label, c.status, c.prepTime, c.endDate, c.preparateur_nom, c.ChargeRestante,
-                       c.forced_planning_lock, p.chantier_id, p.semaine, p.minutes
+                       c.forced_planning_lock, p.chantier_id, p.semaine, p.minutes,
+                       s.semaine as solde_semaine, s.minutes as solde_minutes
                 FROM chantiers c
                 LEFT JOIN planifications p ON c.id = p.chantier_id
-                ORDER BY c.id, p.semaine
+                LEFT JOIN soldes s ON c.id = s.chantier_id
+                ORDER BY c.id, p.semaine, s.semaine
             """)
             
             rows = cur.fetchall()
             
-            # Regrouper les résultats par chantier (avec verrous)
+            # Regrouper les résultats par chantier (avec verrous et soldes)
             chantiers = {}
             for row in rows:
                 chantier_id = row[0]
@@ -378,25 +380,32 @@ def get_chantiers():
                         "preparateur": row[5],
                         "ChargeRestante": row[6],
                         "forcedPlanningLock": row[7] or {},
-                        "planification": {}
+                        "planification": {},
+                        "soldes": {}
                     }
                 
                 # Ajouter la planification si elle existe
-                if row[9] and row[10]:  # semaine et minutes
+                if row[9] and row[10]:  # semaine et minutes de planification
                     chantiers[chantier_id]["planification"][row[9]] = row[10]
+                
+                # Ajouter le solde si il existe
+                if row[11] and row[12]:  # semaine et minutes de solde
+                    chantiers[chantier_id]["soldes"][row[11]] = row[12]
         else:
-            # La colonne n'existe pas encore, requête sans forced_planning_lock
+            # La colonne n'existe pas encore, requête sans forced_planning_lock mais avec soldes
             cur.execute("""
                 SELECT c.id, c.label, c.status, c.prepTime, c.endDate, c.preparateur_nom, c.ChargeRestante,
-                       p.chantier_id, p.semaine, p.minutes
+                       p.chantier_id, p.semaine, p.minutes,
+                       s.semaine as solde_semaine, s.minutes as solde_minutes
                 FROM chantiers c
                 LEFT JOIN planifications p ON c.id = p.chantier_id
-                ORDER BY c.id, p.semaine
+                LEFT JOIN soldes s ON c.id = s.chantier_id
+                ORDER BY c.id, p.semaine, s.semaine
             """)
             
             rows = cur.fetchall()
             
-            # Regrouper les résultats par chantier (sans verrous)
+            # Regrouper les résultats par chantier (sans verrous mais avec soldes)
             chantiers = {}
             for row in rows:
                 chantier_id = row[0]
@@ -410,12 +419,17 @@ def get_chantiers():
                         "preparateur": row[5],
                         "ChargeRestante": row[6],
                         "forcedPlanningLock": {},  # Valeur par défaut
-                        "planification": {}
+                        "planification": {},
+                        "soldes": {}
                     }
                 
                 # Ajouter la planification si elle existe
-                if row[8] and row[9]:  # semaine et minutes (décalé car pas de forced_planning_lock)
+                if row[8] and row[9]:  # semaine et minutes de planification (décalé car pas de forced_planning_lock)
                     chantiers[chantier_id]["planification"][row[8]] = row[9]
+                
+                # Ajouter le solde si il existe
+                if row[10] and row[11]:  # semaine et minutes de solde
+                    chantiers[chantier_id]["soldes"][row[10]] = row[11]
         
         return chantiers
         
