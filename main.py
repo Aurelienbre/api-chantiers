@@ -1586,7 +1586,11 @@ def delete_all_chantiers():
         cur.execute("DELETE FROM soldes")
         soldes_deleted = cur.rowcount
         
-        # 2. Supprimer tous les chantiers
+        # 2. Supprimer toutes les planifications
+        cur.execute("DELETE FROM planifications")
+        planifications_deleted = cur.rowcount
+        
+        # 3. Supprimer tous les chantiers
         cur.execute("DELETE FROM chantiers")
         chantiers_deleted = cur.rowcount
         
