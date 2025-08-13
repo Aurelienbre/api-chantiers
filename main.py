@@ -1529,7 +1529,11 @@ def delete_chantier(chantier_id: str):
         cur.execute("DELETE FROM soldes WHERE chantier_id = %s", (chantier_id,))
         soldes_deleted = cur.rowcount
         
-        # 2. Supprimer le chantier
+        # 2. Supprimer les planifications
+        cur.execute("DELETE FROM planifications WHERE chantier_id = %s", (chantier_id,))
+        planifications_deleted = cur.rowcount
+        
+        # 3. Supprimer le chantier
         cur.execute("DELETE FROM chantiers WHERE id = %s", (chantier_id,))
         chantier_deleted = cur.rowcount
         
@@ -1538,9 +1542,10 @@ def delete_chantier(chantier_id: str):
         return {
             "chantier_id": chantier_id,
             "deleted": True,
+            "planifications_deleted": planifications_deleted,
             "soldes_deleted": soldes_deleted,
             "status": "success",
-            "message": f"Chantier {chantier_id} supprimé avec {soldes_deleted} soldes associés"
+            "message": f"Chantier {chantier_id} supprimé avec {planifications_deleted} planifications et {soldes_deleted} soldes associés"
         }
         
     except HTTPException:
@@ -1599,9 +1604,10 @@ def delete_all_chantiers():
         return {
             "deleted": True,
             "chantiers_deleted": chantiers_deleted,
+            "planifications_deleted": planifications_deleted,
             "soldes_deleted": soldes_deleted,
             "status": "success",
-            "message": f"Tous les chantiers supprimés ({chantiers_deleted} chantiers et {soldes_deleted} soldes)"
+            "message": f"Tous les chantiers supprimés ({chantiers_deleted} chantiers, {planifications_deleted} planifications et {soldes_deleted} soldes)"
         }
         
     except Exception as e:
@@ -1614,6 +1620,297 @@ def delete_all_chantiers():
                 conn.close()
             except:
                 pass
+
+# ===== ENDPOINTS POUR LES HORAIRES DES PRÉPARATEURS =====
+
+@app.get("/horaires")
+def get_all_horaires():
+    """Récupérer tous les horaires de tous les préparateurs"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Vérifier si la table horaires existe
+        cur.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_name = 'horaires_preparateurs'
+        """)
+        table_exists = cur.fetchone()
+        
+        if not table_exists:
+            # Créer la table si elle n'existe pas
+            cur.execute("""
+                CREATE TABLE horaires_preparateurs (
+                    id SERIAL PRIMARY KEY,
+                    preparateur_nom VARCHAR(255) NOT NULL,
+                    jour_semaine VARCHAR(20) NOT NULL,
+                    heure_debut TIME NOT NULL,
+                    heure_fin TIME NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    
+                    -- Index pour améliorer les performances
+                    CONSTRAINT check_jour_semaine CHECK (jour_semaine IN ('lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'))
+                )
+            """)
+            
+            # Créer des index
+            cur.execute("CREATE INDEX idx_horaires_preparateur ON horaires_preparateurs (preparateur_nom)")
+            cur.execute("CREATE INDEX idx_horaires_jour ON horaires_preparateurs (jour_semaine)")
+            
+            # Trigger pour mettre à jour updated_at
+            cur.execute("""
+                CREATE TRIGGER update_horaires_updated_at 
+                BEFORE UPDATE ON horaires_preparateurs 
+                FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()
+            """)
+            
+            conn.commit()
+            return {"message": "Table horaires_preparateurs créée", "horaires": {}}
+        
+        # Récupérer tous les horaires
+        cur.execute("""
+            SELECT preparateur_nom, jour_semaine, heure_debut, heure_fin
+            FROM horaires_preparateurs
+            ORDER BY preparateur_nom, 
+                     CASE jour_semaine 
+                         WHEN 'lundi' THEN 1 
+                         WHEN 'mardi' THEN 2 
+                         WHEN 'mercredi' THEN 3 
+                         WHEN 'jeudi' THEN 4 
+                         WHEN 'vendredi' THEN 5 
+                         WHEN 'samedi' THEN 6 
+                         WHEN 'dimanche' THEN 7 
+                     END,
+                     heure_debut
+        """)
+        
+        results = cur.fetchall()
+        
+        # Organiser les données par préparateur
+        horaires = {}
+        for row in results:
+            preparateur_nom, jour_semaine, heure_debut, heure_fin = row
+            
+            if preparateur_nom not in horaires:
+                horaires[preparateur_nom] = {
+                    'lundi': [], 'mardi': [], 'mercredi': [], 'jeudi': [], 
+                    'vendredi': [], 'samedi': [], 'dimanche': []
+                }
+            
+            horaires[preparateur_nom][jour_semaine].append({
+                'debut': str(heure_debut),
+                'fin': str(heure_fin)
+            })
+        
+        return horaires
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération des horaires: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+@app.get("/horaires/{preparateur_nom}")
+def get_horaires_preparateur(preparateur_nom: str):
+    """Récupérer les horaires d'un préparateur spécifique"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT jour_semaine, heure_debut, heure_fin
+            FROM horaires_preparateurs
+            WHERE preparateur_nom = %s
+            ORDER BY CASE jour_semaine 
+                         WHEN 'lundi' THEN 1 
+                         WHEN 'mardi' THEN 2 
+                         WHEN 'mercredi' THEN 3 
+                         WHEN 'jeudi' THEN 4 
+                         WHEN 'vendredi' THEN 5 
+                         WHEN 'samedi' THEN 6 
+                         WHEN 'dimanche' THEN 7 
+                     END,
+                     heure_debut
+        """, (preparateur_nom,))
+        
+        results = cur.fetchall()
+        
+        # Organiser les données par jour
+        horaires = {
+            'lundi': [], 'mardi': [], 'mercredi': [], 'jeudi': [], 
+            'vendredi': [], 'samedi': [], 'dimanche': []
+        }
+        
+        for row in results:
+            jour_semaine, heure_debut, heure_fin = row
+            horaires[jour_semaine].append({
+                'debut': str(heure_debut),
+                'fin': str(heure_fin)
+            })
+        
+        return horaires
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération des horaires: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+@app.put("/horaires/{preparateur_nom}")
+def update_horaires_preparateur(preparateur_nom: str, horaires_data: Dict[str, Any]):
+    """Mettre à jour les horaires d'un préparateur"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Supprimer tous les horaires existants pour ce préparateur
+        cur.execute("DELETE FROM horaires_preparateurs WHERE preparateur_nom = %s", (preparateur_nom,))
+        
+        # Insérer les nouveaux horaires
+        for jour, creneaux in horaires_data.items():
+            if jour in ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'] and creneaux:
+                for creneau in creneaux:
+                    if isinstance(creneau, dict) and 'debut' in creneau and 'fin' in creneau:
+                        cur.execute("""
+                            INSERT INTO horaires_preparateurs (preparateur_nom, jour_semaine, heure_debut, heure_fin)
+                            VALUES (%s, %s, %s, %s)
+                        """, (preparateur_nom, jour, creneau['debut'], creneau['fin']))
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Horaires mis à jour",
+            "preparateur": preparateur_nom,
+            "message": f"Horaires de {preparateur_nom} synchronisés avec succès"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour des horaires: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+@app.post("/horaires")
+def sync_all_horaires(horaires_data: Dict[str, Any]):
+    """Synchroniser tous les horaires des préparateurs"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Vérifier/créer la table si nécessaire
+        cur.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_name = 'horaires_preparateurs'
+        """)
+        table_exists = cur.fetchone()
+        
+        if not table_exists:
+            # Créer la table
+            cur.execute("""
+                CREATE TABLE horaires_preparateurs (
+                    id SERIAL PRIMARY KEY,
+                    preparateur_nom VARCHAR(255) NOT NULL,
+                    jour_semaine VARCHAR(20) NOT NULL,
+                    heure_debut TIME NOT NULL,
+                    heure_fin TIME NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    
+                    CONSTRAINT check_jour_semaine CHECK (jour_semaine IN ('lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'))
+                )
+            """)
+            
+            cur.execute("CREATE INDEX idx_horaires_preparateur ON horaires_preparateurs (preparateur_nom)")
+            cur.execute("CREATE INDEX idx_horaires_jour ON horaires_preparateurs (jour_semaine)")
+            
+            cur.execute("""
+                CREATE TRIGGER update_horaires_updated_at 
+                BEFORE UPDATE ON horaires_preparateurs 
+                FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()
+            """)
+        
+        # Supprimer tous les horaires existants
+        cur.execute("DELETE FROM horaires_preparateurs")
+        
+        # Insérer tous les nouveaux horaires
+        total_creneaux = 0
+        for preparateur_nom, horaires in horaires_data.items():
+            if isinstance(horaires, dict):
+                for jour, creneaux in horaires.items():
+                    if jour in ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'] and creneaux:
+                        for creneau in creneaux:
+                            if isinstance(creneau, dict) and 'debut' in creneau and 'fin' in creneau:
+                                cur.execute("""
+                                    INSERT INTO horaires_preparateurs (preparateur_nom, jour_semaine, heure_debut, heure_fin)
+                                    VALUES (%s, %s, %s, %s)
+                                """, (preparateur_nom, jour, creneau['debut'], creneau['fin']))
+                                total_creneaux += 1
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Synchronisation complète",
+            "message": f"Horaires de {len(horaires_data)} préparateur(s) synchronisés",
+            "total_creneaux": total_creneaux
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la synchronisation: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+@app.delete("/horaires/{preparateur_nom}")
+def delete_horaires_preparateur(preparateur_nom: str):
+    """Supprimer tous les horaires d'un préparateur"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Compter les horaires avant suppression
+        cur.execute("SELECT COUNT(*) FROM horaires_preparateurs WHERE preparateur_nom = %s", (preparateur_nom,))
+        count_before = cur.fetchone()[0]
+        
+        # Supprimer les horaires
+        cur.execute("DELETE FROM horaires_preparateurs WHERE preparateur_nom = %s", (preparateur_nom,))
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Horaires supprimés",
+            "preparateur": preparateur_nom,
+            "creneaux_supprimes": count_before
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
 if __name__ == "__main__":
     import uvicorn
