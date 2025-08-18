@@ -2020,6 +2020,74 @@ def initialize_chantiers_tables():
         if conn:
             conn.close()
 
+@app.get("/debug/nouvelles-tables")
+def debug_nouvelles_tables():
+    """Vérifier la structure des nouvelles tables chantiers_planification et planifications"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        result = {}
+        
+        # Vérifier chantiers_planification
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'chantiers_planification'
+            )
+        """)
+        
+        if cur.fetchone()[0]:
+            cur.execute("""
+                SELECT column_name, data_type, is_nullable
+                FROM information_schema.columns 
+                WHERE table_name = 'chantiers_planification'
+                ORDER BY ordinal_position
+            """)
+            result["chantiers_planification"] = {
+                "exists": True,
+                "columns": [{"name": col[0], "type": col[1], "nullable": col[2]} for col in cur.fetchall()]
+            }
+        else:
+            result["chantiers_planification"] = {"exists": False}
+        
+        # Vérifier planifications
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'planifications'
+            )
+        """)
+        
+        if cur.fetchone()[0]:
+            cur.execute("""
+                SELECT column_name, data_type, is_nullable
+                FROM information_schema.columns 
+                WHERE table_name = 'planifications'
+                ORDER BY ordinal_position
+            """)
+            result["planifications"] = {
+                "exists": True,
+                "columns": [{"name": col[0], "type": col[1], "nullable": col[2]} for col in cur.fetchall()]
+            }
+        else:
+            result["planifications"] = {"exists": False}
+        
+        return {
+            "status": "✅ Vérification terminée",
+            "tables": result
+        }
+        
+    except Exception as e:
+        return {
+            "status": "❌ Erreur vérification",
+            "error": str(e)
+        }
+    finally:
+        if conn:
+            conn.close()
+
 @app.get("/debug/etiquettes-structure")
 def debug_etiquettes_structure():
     """Vérifier la structure de la table etiquettes_planification"""
