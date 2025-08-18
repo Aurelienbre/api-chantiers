@@ -4,6 +4,26 @@ from typing import Dict, Optional, Any
 
 import os
 
+# Configuration de la base de données
+def get_db_connection():
+    """Établit une connexion à la base PostgreSQL"""
+    database_url = os.environ.get('DATABASE_URL')
+    
+    if not database_url:
+        raise Exception("DATABASE_URL non définie")
+    
+    try:
+        # Essayer psycopg3 d'abord
+        import psycopg
+        return psycopg.connect(database_url)
+    except ImportError:
+        try:
+            # Fallback sur psycopg2
+            import psycopg2
+            return psycopg2.connect(database_url)
+        except ImportError:
+            raise Exception("Aucun module psycopg disponible")
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
