@@ -52,6 +52,43 @@ def ensure_etiquettes_table(conn):
     
     conn.commit()
 
+def ensure_chantiers_planification_tables(conn):
+    """Créer les nouvelles tables chantiers_planification et planifications"""
+    cur = conn.cursor()
+    
+    # Table principale des chantiers
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS chantiers_planification (
+            id SERIAL PRIMARY KEY,
+            type_activite VARCHAR(50) NOT NULL,
+            description TEXT,
+            group_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Table des planifications (détails jour/heure/préparateurs)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS planifications (
+            id SERIAL PRIMARY KEY,
+            chantier_id INTEGER REFERENCES chantiers_planification(id) ON DELETE CASCADE,
+            date_jour DATE NOT NULL,
+            heure_debut INTEGER NOT NULL,
+            heure_fin INTEGER NOT NULL,
+            preparateurs TEXT[] NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Index pour optimiser les requêtes
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_chantier_id ON planifications(chantier_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_date ON planifications(date_jour)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_chantiers_group_id ON chantiers_planification(group_id)")
+    
+    conn.commit()
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -1962,6 +1999,27 @@ def delete_horaires_preparateur(preparateur_nom: str):
 
 # ===== ENDPOINTS POUR LES ÉTIQUETTES DE PLANIFICATION =====
 
+@app.post("/chantiers/init")
+def initialize_chantiers_tables():
+    """Initialiser les nouvelles tables chantiers_planification et planifications"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_chantiers_planification_tables(conn)
+        return {
+            "status": "✅ Nouvelles tables initialisées",
+            "tables": ["chantiers_planification", "planifications"],
+            "message": "Prêt pour la migration des données"
+        }
+    except Exception as e:
+        return {
+            "status": "❌ Erreur initialisation",
+            "error": str(e)
+        }
+    finally:
+        if conn:
+            conn.close()
+
 @app.post("/etiquettes/init")
 def init_etiquettes_table():
     """Initialiser la table des étiquettes de planification"""
@@ -1989,6 +2047,301 @@ def init_etiquettes_table():
     finally:
         if conn:
             conn.close()
+
+# ========================================================================
+# 🏗️ GESTION DES CHANTIERS DE PLANIFICATION (NOUVELLE STRUCTURE)
+# ========================================================================
+
+@app.get("/chantiers-planification")
+def get_all_chantiers_planification():
+    """Récupérer tous les chantiers de planification avec leurs planifications"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_chantiers_planification_tables(conn)
+        cur = conn.cursor()
+        
+        # Récupérer tous les chantiers avec leurs planifications
+        cur.execute("""
+            SELECT 
+                c.id, c.type_activite, c.description, c.group_id, 
+                c.created_at, c.updated_at,
+                p.id as planif_id, p.date_jour, p.heure_debut, p.heure_fin, p.preparateurs
+            FROM chantiers_planification c
+            LEFT JOIN planifications p ON c.id = p.chantier_id
+            ORDER BY c.created_at DESC, p.date_jour ASC, p.heure_debut ASC
+        """)
+        
+        results = cur.fetchall()
+        
+        # Grouper les résultats par chantier
+        chantiers = {}
+        for row in results:
+            chantier_id = row[0]
+            
+            if chantier_id not in chantiers:
+                chantiers[chantier_id] = {
+                    "id": row[0],
+                    "type_activite": row[1],
+                    "description": row[2],
+                    "group_id": row[3],
+                    "created_at": row[4].isoformat() if row[4] else None,
+                    "updated_at": row[5].isoformat() if row[5] else None,
+                    "planifications": []
+                }
+            
+            # Ajouter la planification si elle existe
+            if row[6]:  # planif_id
+                chantiers[chantier_id]["planifications"].append({
+                    "id": row[6],
+                    "date_jour": row[7].strftime('%Y-%m-%d'),
+                    "heure_debut": row[8],
+                    "heure_fin": row[9],
+                    "preparateurs": row[10]
+                })
+        
+        chantiers_list = list(chantiers.values())
+        
+        return {
+            "status": "✅ Chantiers récupérés",
+            "count": len(chantiers_list),
+            "chantiers": chantiers_list
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+@app.post("/chantiers-planification")
+def create_chantier_planification(chantier_data: Dict[str, Any]):
+    """Créer un nouveau chantier de planification avec ses planifications"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_chantiers_planification_tables(conn)
+        cur = conn.cursor()
+        
+        # Valider les données requises
+        required_fields = ['type_activite', 'planifications']
+        for field in required_fields:
+            if field not in chantier_data:
+                raise HTTPException(status_code=400, detail=f"Champ requis manquant: {field}")
+        
+        if not chantier_data['planifications']:
+            raise HTTPException(status_code=400, detail="Au moins une planification est requise")
+        
+        # Créer le chantier principal
+        cur.execute("""
+            INSERT INTO chantiers_planification (type_activite, description, group_id)
+            VALUES (%s, %s, %s)
+            RETURNING id, created_at, updated_at
+        """, (
+            chantier_data['type_activite'],
+            chantier_data.get('description'),
+            chantier_data.get('group_id')
+        ))
+        
+        chantier_result = cur.fetchone()
+        chantier_id = chantier_result[0]
+        
+        # Créer les planifications
+        planifications_creees = []
+        for planif in chantier_data['planifications']:
+            # Valider les champs de planification
+            required_planif_fields = ['date_jour', 'heure_debut', 'heure_fin', 'preparateurs']
+            for field in required_planif_fields:
+                if field not in planif:
+                    raise HTTPException(status_code=400, detail=f"Champ planification requis manquant: {field}")
+            
+            # Valider les heures
+            if planif['heure_debut'] >= planif['heure_fin']:
+                raise HTTPException(status_code=400, detail=f"Heure de début ({planif['heure_debut']}) doit être < heure de fin ({planif['heure_fin']})")
+            
+            # Insérer la planification
+            cur.execute("""
+                INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, created_at
+            """, (
+                chantier_id,
+                planif['date_jour'],
+                planif['heure_debut'],
+                planif['heure_fin'],
+                planif['preparateurs']
+            ))
+            
+            planif_result = cur.fetchone()
+            planifications_creees.append({
+                "id": planif_result[0],
+                "date_jour": planif['date_jour'],
+                "heure_debut": planif['heure_debut'],
+                "heure_fin": planif['heure_fin'],
+                "preparateurs": planif['preparateurs'],
+                "created_at": planif_result[1].isoformat()
+            })
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Chantier créé",
+            "chantier": {
+                "id": chantier_id,
+                "type_activite": chantier_data['type_activite'],
+                "description": chantier_data.get('description'),
+                "group_id": chantier_data.get('group_id'),
+                "created_at": chantier_result[1].isoformat(),
+                "updated_at": chantier_result[2].isoformat(),
+                "planifications": planifications_creees
+            }
+        }
+        
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la création: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+@app.post("/migrate-to-chantiers")
+def migrate_etiquettes_to_chantiers():
+    """Migrer les données des étiquettes vers la nouvelle structure chantiers"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_etiquettes_table(conn)
+        ensure_chantiers_planification_tables(conn)
+        cur = conn.cursor()
+        
+        # Récupérer toutes les étiquettes groupées par group_id
+        cur.execute("""
+            SELECT group_id, type_activite, description, 
+                   array_agg(preparateur) as preparateurs,
+                   array_agg(date_jour) as dates,
+                   array_agg(heure_debut) as heures_debut,
+                   array_agg(heure_fin) as heures_fin
+            FROM etiquettes_planification 
+            WHERE group_id IS NOT NULL
+            GROUP BY group_id, type_activite, description
+            ORDER BY group_id
+        """)
+        
+        etiquettes_groupees = cur.fetchall()
+        
+        # Traiter aussi les étiquettes sans group_id (individuelles)
+        cur.execute("""
+            SELECT id, preparateur, date_jour, heure_debut, heure_fin, type_activite, description
+            FROM etiquettes_planification 
+            WHERE group_id IS NULL
+            ORDER BY id
+        """)
+        
+        etiquettes_individuelles = cur.fetchall()
+        
+        chantiers_crees = []
+        
+        # Migrer les étiquettes groupées
+        for row in etiquettes_groupees:
+            group_id, type_activite, description, preparateurs, dates, heures_debut, heures_fin = row
+            
+            # Créer le chantier
+            cur.execute("""
+                INSERT INTO chantiers_planification (type_activite, description, group_id)
+                VALUES (%s, %s, %s)
+                RETURNING id, created_at
+            """, (type_activite, description, group_id))
+            
+            chantier_result = cur.fetchone()
+            chantier_id = chantier_result[0]
+            
+            # Grouper les planifications par date/heure
+            planifications_map = {}
+            for i, date in enumerate(dates):
+                key = f"{date}_{heures_debut[i]}_{heures_fin[i]}"
+                if key not in planifications_map:
+                    planifications_map[key] = {
+                        'date_jour': date,
+                        'heure_debut': heures_debut[i],
+                        'heure_fin': heures_fin[i],
+                        'preparateurs': []
+                    }
+                planifications_map[key]['preparateurs'].append(preparateurs[i])
+            
+            # Créer les planifications
+            for planif_data in planifications_map.values():
+                cur.execute("""
+                    INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (
+                    chantier_id,
+                    planif_data['date_jour'],
+                    planif_data['heure_debut'],
+                    planif_data['heure_fin'],
+                    planif_data['preparateurs']
+                ))
+            
+            chantiers_crees.append({
+                "chantier_id": chantier_id,
+                "type_activite": type_activite,
+                "description": description,
+                "group_id": group_id
+            })
+        
+        # Migrer les étiquettes individuelles
+        for row in etiquettes_individuelles:
+            etiquette_id, preparateur, date_jour, heure_debut, heure_fin, type_activite, description = row
+            
+            # Créer un chantier individuel
+            cur.execute("""
+                INSERT INTO chantiers_planification (type_activite, description, group_id)
+                VALUES (%s, %s, %s)
+                RETURNING id
+            """, (type_activite, description, etiquette_id))
+            
+            chantier_id = cur.fetchone()[0]
+            
+            # Créer la planification unique
+            cur.execute("""
+                INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (chantier_id, date_jour, heure_debut, heure_fin, [preparateur]))
+            
+            chantiers_crees.append({
+                "chantier_id": chantier_id,
+                "type_activite": type_activite,
+                "description": description,
+                "group_id": etiquette_id
+            })
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Migration terminée",
+            "summary": {
+                "etiquettes_groupees": len(etiquettes_groupees),
+                "etiquettes_individuelles": len(etiquettes_individuelles),
+                "chantiers_crees": len(chantiers_crees)
+            },
+            "message": "Les données ont été migrées vers la nouvelle structure. Testez avec GET /chantiers-planification"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la migration: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+# ========================================================================
+# 🏷️ GESTION DES ÉTIQUETTES DE PLANIFICATION (ANCIENNE STRUCTURE)
+# ========================================================================
 
 @app.get("/etiquettes")
 def get_all_etiquettes():
