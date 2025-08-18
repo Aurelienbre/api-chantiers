@@ -2277,61 +2277,66 @@ def migrate_etiquettes_to_chantiers():
         ensure_chantiers_planification_tables(conn)
         cur = conn.cursor()
         
-        # Récupérer toutes les étiquettes groupées par group_id
-        cur.execute("""
-            SELECT group_id, type_activite, description, 
-                   array_agg(preparateur) as preparateurs,
-                   array_agg(date_jour) as dates,
-                   array_agg(heure_debut) as heures_debut,
-                   array_agg(heure_fin) as heures_fin
-            FROM etiquettes_planification 
-            WHERE group_id IS NOT NULL
-            GROUP BY group_id, type_activite, description
-            ORDER BY group_id
-        """)
+        # D'abord, vérifier combien d'étiquettes nous avons
+        cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
+        total_etiquettes = cur.fetchone()[0]
         
-        etiquettes_groupees = cur.fetchall()
-        
-        # Traiter aussi les étiquettes sans group_id (individuelles)
-        cur.execute("""
-            SELECT id, preparateur, date_jour, heure_debut, heure_fin, type_activite, description
-            FROM etiquettes_planification 
-            WHERE group_id IS NULL
-            ORDER BY id
-        """)
-        
-        etiquettes_individuelles = cur.fetchall()
+        if total_etiquettes == 0:
+            return {
+                "status": "⚠️ Aucune donnée à migrer",
+                "message": "La table etiquettes_planification est vide"
+            }
         
         chantiers_crees = []
         
-        # Migrer les étiquettes groupées
-        for row in etiquettes_groupees:
-            group_id, type_activite, description, preparateurs, dates, heures_debut, heures_fin = row
-            
-            # Créer le chantier
+        # Étape 1: Migrer les étiquettes avec group_id (groupées)
+        cur.execute("""
+            SELECT DISTINCT group_id, type_activite, description
+            FROM etiquettes_planification 
+            WHERE group_id IS NOT NULL
+            ORDER BY group_id
+        """)
+        
+        groups_distincts = cur.fetchall()
+        print(f"Groups distincts trouvés: {len(groups_distincts)}")
+        
+        for group_id, type_activite, description in groups_distincts:
+            # Créer le chantier pour ce groupe
             cur.execute("""
                 INSERT INTO chantiers_planification (type_activite, description, group_id)
                 VALUES (%s, %s, %s)
-                RETURNING id, created_at
+                RETURNING id
             """, (type_activite, description, group_id))
             
-            chantier_result = cur.fetchone()
-            chantier_id = chantier_result[0]
+            chantier_id = cur.fetchone()[0]
             
-            # Grouper les planifications par date/heure
+            # Récupérer toutes les étiquettes de ce groupe
+            cur.execute("""
+                SELECT preparateur, date_jour, heure_debut, heure_fin
+                FROM etiquettes_planification 
+                WHERE group_id = %s
+                ORDER BY date_jour, heure_debut
+            """, (group_id,))
+            
+            etiquettes_du_groupe = cur.fetchall()
+            
+            # Grouper par date/heure pour regrouper les préparateurs
             planifications_map = {}
-            for i, date in enumerate(dates):
-                key = f"{date}_{heures_debut[i]}_{heures_fin[i]}"
+            for preparateur, date_jour, heure_debut, heure_fin in etiquettes_du_groupe:
+                date_str = date_jour.strftime('%Y-%m-%d')
+                key = f"{date_str}_{heure_debut}_{heure_fin}"
+                
                 if key not in planifications_map:
                     planifications_map[key] = {
-                        'date_jour': date,
-                        'heure_debut': heures_debut[i],
-                        'heure_fin': heures_fin[i],
+                        'date_jour': date_str,
+                        'heure_debut': heure_debut,
+                        'heure_fin': heure_fin,
                         'preparateurs': []
                     }
-                planifications_map[key]['preparateurs'].append(preparateurs[i])
+                planifications_map[key]['preparateurs'].append(preparateur)
             
-            # Créer les planifications
+            # Créer les planifications regroupées
+            planifications_creees = 0
             for planif_data in planifications_map.values():
                 cur.execute("""
                     INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
@@ -2343,24 +2348,34 @@ def migrate_etiquettes_to_chantiers():
                     planif_data['heure_fin'],
                     planif_data['preparateurs']
                 ))
+                planifications_creees += 1
             
             chantiers_crees.append({
                 "chantier_id": chantier_id,
                 "type_activite": type_activite,
                 "description": description,
-                "group_id": group_id
+                "group_id": group_id,
+                "etiquettes_source": len(etiquettes_du_groupe),
+                "planifications_creees": planifications_creees
             })
         
-        # Migrer les étiquettes individuelles
-        for row in etiquettes_individuelles:
-            etiquette_id, preparateur, date_jour, heure_debut, heure_fin, type_activite, description = row
-            
+        # Étape 2: Migrer les étiquettes individuelles (sans group_id)
+        cur.execute("""
+            SELECT id, preparateur, date_jour, heure_debut, heure_fin, type_activite, description
+            FROM etiquettes_planification 
+            WHERE group_id IS NULL
+            ORDER BY id
+        """)
+        
+        etiquettes_individuelles = cur.fetchall()
+        
+        for etiquette_id, preparateur, date_jour, heure_debut, heure_fin, type_activite, description in etiquettes_individuelles:
             # Créer un chantier individuel
             cur.execute("""
                 INSERT INTO chantiers_planification (type_activite, description, group_id)
                 VALUES (%s, %s, %s)
                 RETURNING id
-            """, (type_activite, description, etiquette_id))
+            """, (type_activite, description, etiquette_id))  # Utiliser l'ancien ID comme group_id
             
             chantier_id = cur.fetchone()[0]
             
@@ -2374,7 +2389,9 @@ def migrate_etiquettes_to_chantiers():
                 "chantier_id": chantier_id,
                 "type_activite": type_activite,
                 "description": description,
-                "group_id": etiquette_id
+                "group_id": f"individual_{etiquette_id}",
+                "etiquettes_source": 1,
+                "planifications_creees": 1
             })
         
         conn.commit()
@@ -2382,17 +2399,24 @@ def migrate_etiquettes_to_chantiers():
         return {
             "status": "✅ Migration terminée",
             "summary": {
-                "etiquettes_groupees": len(etiquettes_groupees),
+                "total_etiquettes_source": total_etiquettes,
+                "groups_distincts": len(groups_distincts),
                 "etiquettes_individuelles": len(etiquettes_individuelles),
-                "chantiers_crees": len(chantiers_crees)
+                "chantiers_crees": len(chantiers_crees),
+                "total_planifications": sum(c["planifications_creees"] for c in chantiers_crees)
             },
-            "message": "Les données ont été migrées vers la nouvelle structure. Testez avec GET /chantiers-planification"
+            "chantiers": chantiers_crees[:3],  # Afficher les 3 premiers
+            "message": "Migration réussie ! Testez avec GET /chantiers-planification"
         }
         
     except Exception as e:
         if conn:
             conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la migration: {str(e)}")
+        return {
+            "status": "❌ Erreur migration",
+            "error": str(e),
+            "debug": "Vérifiez les logs pour plus de détails"
+        }
     finally:
         if conn:
             conn.close()
