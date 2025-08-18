@@ -2020,6 +2020,64 @@ def initialize_chantiers_tables():
         if conn:
             conn.close()
 
+@app.get("/debug/etiquettes-structure")
+def debug_etiquettes_structure():
+    """Vérifier la structure de la table etiquettes_planification"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Vérifier si la table existe
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'etiquettes_planification'
+            )
+        """)
+        table_exists = cur.fetchone()[0]
+        
+        if not table_exists:
+            return {
+                "status": "❌ Table etiquettes_planification n'existe pas",
+                "solution": "Utilisez POST /etiquettes/init pour la créer"
+            }
+        
+        # Récupérer la structure des colonnes
+        cur.execute("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns 
+            WHERE table_name = 'etiquettes_planification'
+            ORDER BY ordinal_position
+        """)
+        columns = cur.fetchall()
+        
+        # Récupérer quelques exemples de données
+        cur.execute("SELECT * FROM etiquettes_planification LIMIT 3")
+        sample_data = cur.fetchall()
+        
+        # Compter les enregistrements
+        cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
+        total_count = cur.fetchone()[0]
+        
+        return {
+            "status": "✅ Structure analysée",
+            "table_exists": table_exists,
+            "total_records": total_count,
+            "columns": [{"name": col[0], "type": col[1], "nullable": col[2]} for col in columns],
+            "sample_data": sample_data[:2] if sample_data else [],
+            "column_names": [col[0] for col in columns]
+        }
+        
+    except Exception as e:
+        return {
+            "status": "❌ Erreur analyse",
+            "error": str(e)
+        }
+    finally:
+        if conn:
+            conn.close()
+
 @app.post("/etiquettes/init")
 def init_etiquettes_table():
     """Initialiser la table des étiquettes de planification"""
