@@ -24,6 +24,34 @@ def get_db_connection():
         except ImportError:
             raise Exception("Aucun module psycopg disponible")
 
+def ensure_etiquettes_table(conn):
+    """S'assure que la table etiquettes_planification existe"""
+    cur = conn.cursor()
+    
+    # Créer la table si elle n'existe pas
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS etiquettes_planification (
+            id SERIAL PRIMARY KEY,
+            preparateur VARCHAR(100) NOT NULL,
+            date_jour DATE NOT NULL,
+            heure_debut INTEGER NOT NULL,
+            heure_fin INTEGER NOT NULL,
+            type_activite VARCHAR(50) NOT NULL DEFAULT 'activite',
+            description TEXT,
+            group_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Index pour optimiser les requêtes
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_etiquettes_preparateur_date 
+        ON etiquettes_planification (preparateur, date_jour)
+    """)
+    
+    conn.commit()
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -1934,37 +1962,44 @@ def delete_horaires_preparateur(preparateur_nom: str):
 
 # ===== ENDPOINTS POUR LES ÉTIQUETTES DE PLANIFICATION =====
 
+@app.post("/etiquettes/init")
+def init_etiquettes_table():
+    """Initialiser la table des étiquettes de planification"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_etiquettes_table(conn)
+        
+        # Vérifier que la table a été créée
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM information_schema.tables 
+            WHERE table_schema = 'public' AND table_name = 'etiquettes_planification'
+        """)
+        table_exists = cur.fetchone()[0] > 0
+        
+        return {
+            "status": "✅ Table étiquettes initialisée",
+            "table_exists": table_exists,
+            "message": "La table etiquettes_planification est prête à être utilisée"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'initialisation: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
 @app.get("/etiquettes")
 def get_all_etiquettes():
     """Récupérer toutes les étiquettes de planification"""
     conn = None
     try:
         conn = get_db_connection()
+        
+        # S'assurer que la table existe
+        ensure_etiquettes_table(conn)
         cur = conn.cursor()
-        
-        # Créer la table si elle n'existe pas
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS etiquettes_planification (
-                id SERIAL PRIMARY KEY,
-                preparateur VARCHAR(100) NOT NULL,
-                date_jour DATE NOT NULL,
-                heure_debut INTEGER NOT NULL,
-                heure_fin INTEGER NOT NULL,
-                type_activite VARCHAR(50) NOT NULL DEFAULT 'activite',
-                description TEXT,
-                group_id INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # Index pour optimiser les requêtes
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_etiquettes_preparateur_date 
-            ON etiquettes_planification (preparateur, date_jour)
-        """)
-        
-        conn.commit()
         
         # Récupérer toutes les étiquettes
         cur.execute("""
@@ -2014,6 +2049,9 @@ def get_etiquettes_preparateur(preparateur: str):
     conn = None
     try:
         conn = get_db_connection()
+        
+        # S'assurer que la table existe
+        ensure_etiquettes_table(conn)
         cur = conn.cursor()
         
         cur.execute("""
@@ -2062,6 +2100,9 @@ def create_etiquette(etiquette_data: Dict[str, Any]):
     conn = None
     try:
         conn = get_db_connection()
+        
+        # S'assurer que la table existe
+        ensure_etiquettes_table(conn)
         cur = conn.cursor()
         
         # Valider les données requises
