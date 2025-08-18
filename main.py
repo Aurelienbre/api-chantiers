@@ -2339,245 +2339,99 @@ def migrate_etiquettes_to_chantiers():
         if conn:
             conn.close()
 
-# ========================================================================
-# 🏷️ GESTION DES ÉTIQUETTES DE PLANIFICATION (ANCIENNE STRUCTURE)
-# ========================================================================
-
-@app.get("/etiquettes")
-def get_all_etiquettes():
-    """Récupérer toutes les étiquettes de planification"""
+@app.put("/chantiers-planification/{chantier_id}")
+def update_chantier_planification(chantier_id: int, chantier_data: Dict[str, Any]):
+    """Mettre à jour un chantier de planification"""
     conn = None
     try:
         conn = get_db_connection()
-        
-        # S'assurer que la table existe
-        ensure_etiquettes_table(conn)
+        ensure_chantiers_planification_tables(conn)
         cur = conn.cursor()
         
-        # Récupérer toutes les étiquettes
-        cur.execute("""
-            SELECT id, preparateur, date_jour, heure_debut, heure_fin, 
-                   type_activite, description, group_id, created_at, updated_at
-            FROM etiquettes_planification 
-            ORDER BY preparateur, date_jour, heure_debut
-        """)
-        
-        etiquettes = {}
-        for row in cur.fetchall():
-            etiquette_id, preparateur, date_jour, heure_debut, heure_fin, type_activite, description, group_id, created_at, updated_at = row
-            
-            if preparateur not in etiquettes:
-                etiquettes[preparateur] = {}
-            
-            date_key = date_jour.strftime('%Y-%m-%d')
-            if date_key not in etiquettes[preparateur]:
-                etiquettes[preparateur][date_key] = []
-            
-            etiquettes[preparateur][date_key].append({
-                'id': etiquette_id,
-                'heure_debut': heure_debut,
-                'heure_fin': heure_fin,
-                'type': type_activite,
-                'description': description,
-                'group_id': group_id,
-                'created_at': created_at.isoformat() if created_at else None,
-                'updated_at': updated_at.isoformat() if updated_at else None
-            })
-        
-        return {
-            "status": "✅ Étiquettes récupérées",
-            "data": etiquettes,
-            "total": sum(len(dates.get(date_key, [])) for dates in etiquettes.values() for date_key in dates.keys())
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération: {str(e)}")
-    finally:
-        if conn:
-            conn.close()
-
-@app.get("/etiquettes/{preparateur}")
-def get_etiquettes_preparateur(preparateur: str):
-    """Récupérer les étiquettes d'un préparateur spécifique"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        
-        # S'assurer que la table existe
-        ensure_etiquettes_table(conn)
-        cur = conn.cursor()
-        
-        cur.execute("""
-            SELECT id, date_jour, heure_debut, heure_fin, 
-                   type_activite, description, group_id, created_at, updated_at
-            FROM etiquettes_planification 
-            WHERE preparateur = %s
-            ORDER BY date_jour, heure_debut
-        """, (preparateur,))
-        
-        etiquettes = {}
-        for row in cur.fetchall():
-            etiquette_id, date_jour, heure_debut, heure_fin, type_activite, description, group_id, created_at, updated_at = row
-            
-            date_key = date_jour.strftime('%Y-%m-%d')
-            if date_key not in etiquettes:
-                etiquettes[date_key] = []
-            
-            etiquettes[date_key].append({
-                'id': etiquette_id,
-                'heure_debut': heure_debut,
-                'heure_fin': heure_fin,
-                'type': type_activite,
-                'description': description,
-                'group_id': group_id,
-                'created_at': created_at.isoformat() if created_at else None,
-                'updated_at': updated_at.isoformat() if updated_at else None
-            })
-        
-        return {
-            "status": "✅ Étiquettes du préparateur récupérées",
-            "preparateur": preparateur,
-            "data": etiquettes,
-            "total": sum(len(etiquettes_date) for etiquettes_date in etiquettes.values())
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération: {str(e)}")
-    finally:
-        if conn:
-            conn.close()
-
-@app.post("/etiquettes")
-def create_etiquette(etiquette_data: Dict[str, Any]):
-    """Créer une nouvelle étiquette de planification"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        
-        # S'assurer que la table existe
-        ensure_etiquettes_table(conn)
-        cur = conn.cursor()
-        
-        # Valider les données requises
-        required_fields = ['preparateur', 'date_jour', 'heure_debut', 'heure_fin']
-        for field in required_fields:
-            if field not in etiquette_data:
-                raise HTTPException(status_code=400, detail=f"Champ requis manquant: {field}")
-        
-        preparateur = etiquette_data['preparateur']
-        date_jour = etiquette_data['date_jour']
-        heure_debut = etiquette_data['heure_debut']
-        heure_fin = etiquette_data['heure_fin']
-        type_activite = etiquette_data.get('type', 'activite')
-        description = etiquette_data.get('description', '')
-        group_id = etiquette_data.get('group_id', None)
-        
-        # Vérifier la cohérence des heures
-        if heure_debut >= heure_fin:
-            raise HTTPException(status_code=400, detail="L'heure de début doit être antérieure à l'heure de fin")
-        
-        # Insérer l'étiquette
-        cur.execute("""
-            INSERT INTO etiquettes_planification 
-            (preparateur, date_jour, heure_debut, heure_fin, type_activite, description, group_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, created_at
-        """, (preparateur, date_jour, heure_debut, heure_fin, type_activite, description, group_id))
-        
-        result = cur.fetchone()
-        etiquette_id, created_at = result
-        conn.commit()
-        
-        return {
-            "status": "✅ Étiquette créée",
-            "id": etiquette_id,
-            "preparateur": preparateur,
-            "date_jour": date_jour,
-            "heure_debut": heure_debut,
-            "heure_fin": heure_fin,
-            "type": type_activite,
-            "description": description,
-            "group_id": group_id,
-            "created_at": created_at.isoformat()
-        }
-        
-    except HTTPException:
-        if conn:
-            conn.rollback()
-        raise
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la création: {str(e)}")
-    finally:
-        if conn:
-            conn.close()
-
-@app.put("/etiquettes/{etiquette_id}")
-def update_etiquette(etiquette_id: int, etiquette_data: Dict[str, Any]):
-    """Mettre à jour une étiquette de planification"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Vérifier que l'étiquette existe
-        cur.execute("SELECT id FROM etiquettes_planification WHERE id = %s", (etiquette_id,))
+        # Vérifier que le chantier existe
+        cur.execute("SELECT id FROM chantiers_planification WHERE id = %s", (chantier_id,))
         if not cur.fetchone():
-            raise HTTPException(status_code=404, detail="Étiquette non trouvée")
+            raise HTTPException(status_code=404, detail="Chantier non trouvé")
         
-        # Construire la requête de mise à jour dynamiquement
+        # Mettre à jour les informations du chantier
         update_fields = []
         update_values = []
         
-        for field in ['preparateur', 'date_jour', 'heure_debut', 'heure_fin', 'type_activite', 'description', 'group_id']:
-            if field in etiquette_data:
+        for field in ['type_activite', 'description', 'group_id']:
+            if field in chantier_data:
                 update_fields.append(f"{field} = %s")
-                
-                # Convertir 'type' en 'type_activite' pour la base
-                if field == 'type_activite' and 'type' in etiquette_data:
-                    update_values.append(etiquette_data['type'])
-                else:
-                    update_values.append(etiquette_data[field])
+                update_values.append(chantier_data[field])
         
-        if not update_fields:
-            raise HTTPException(status_code=400, detail="Aucun champ à mettre à jour")
+        if update_fields:
+            update_fields.append("updated_at = CURRENT_TIMESTAMP")
+            update_values.append(chantier_id)
+            
+            query = f"""
+                UPDATE chantiers_planification 
+                SET {', '.join(update_fields)}
+                WHERE id = %s
+            """
+            cur.execute(query, update_values)
         
-        # Ajouter le timestamp de mise à jour
-        update_fields.append("updated_at = CURRENT_TIMESTAMP")
-        update_values.append(etiquette_id)
+        # Mettre à jour les planifications si fournies
+        if 'planifications' in chantier_data:
+            # Supprimer les anciennes planifications
+            cur.execute("DELETE FROM planifications WHERE chantier_id = %s", (chantier_id,))
+            
+            # Créer les nouvelles planifications
+            for planif in chantier_data['planifications']:
+                cur.execute("""
+                    INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (
+                    chantier_id,
+                    planif['date_jour'],
+                    planif['heure_debut'],
+                    planif['heure_fin'],
+                    planif['preparateurs']
+                ))
         
-        # Vérifier la cohérence des heures si elles sont mises à jour
-        if 'heure_debut' in etiquette_data and 'heure_fin' in etiquette_data:
-            if etiquette_data['heure_debut'] >= etiquette_data['heure_fin']:
-                raise HTTPException(status_code=400, detail="L'heure de début doit être antérieure à l'heure de fin")
-        
-        # Exécuter la mise à jour
-        query = f"""
-            UPDATE etiquettes_planification 
-            SET {', '.join(update_fields)}
-            WHERE id = %s
-            RETURNING preparateur, date_jour, heure_debut, heure_fin, type_activite, description, group_id, updated_at
-        """
-        
-        cur.execute(query, update_values)
-        result = cur.fetchone()
         conn.commit()
         
-        if result:
-            preparateur, date_jour, heure_debut, heure_fin, type_activite, description, group_id, updated_at = result
-            return {
-                "status": "✅ Étiquette mise à jour",
-                "id": etiquette_id,
-                "preparateur": preparateur,
-                "date_jour": date_jour.strftime('%Y-%m-%d'),
-                "heure_debut": heure_debut,
-                "heure_fin": heure_fin,
-                "type": type_activite,
-                "description": description,
-                "group_id": group_id,
-                "updated_at": updated_at.isoformat()
-            }
+        # Récupérer le chantier mis à jour
+        cur.execute("""
+            SELECT c.id, c.type_activite, c.description, c.group_id, c.updated_at,
+                   p.id, p.date_jour, p.heure_debut, p.heure_fin, p.preparateurs
+            FROM chantiers_planification c
+            LEFT JOIN planifications p ON c.id = p.chantier_id
+            WHERE c.id = %s
+            ORDER BY p.date_jour, p.heure_debut
+        """, (chantier_id,))
+        
+        results = cur.fetchall()
+        if not results:
+            raise HTTPException(status_code=404, detail="Chantier non trouvé après mise à jour")
+        
+        # Construire la réponse
+        first_row = results[0]
+        chantier = {
+            "id": first_row[0],
+            "type_activite": first_row[1],
+            "description": first_row[2],
+            "group_id": first_row[3],
+            "updated_at": first_row[4].isoformat(),
+            "planifications": []
+        }
+        
+        for row in results:
+            if row[5]:  # Si planification existe
+                chantier["planifications"].append({
+                    "id": row[5],
+                    "date_jour": row[6].strftime('%Y-%m-%d'),
+                    "heure_debut": row[7],
+                    "heure_fin": row[8],
+                    "preparateurs": row[9]
+                })
+        
+        return {
+            "status": "✅ Chantier mis à jour",
+            "chantier": chantier
+        }
         
     except HTTPException:
         if conn:
@@ -2591,77 +2445,42 @@ def update_etiquette(etiquette_id: int, etiquette_data: Dict[str, Any]):
         if conn:
             conn.close()
 
-@app.delete("/etiquettes/{etiquette_id}")
-def delete_etiquette(etiquette_id: int):
-    """Supprimer une étiquette de planification"""
+@app.delete("/chantiers-planification/{chantier_id}")
+def delete_chantier_planification(chantier_id: int):
+    """Supprimer un chantier de planification et toutes ses planifications"""
     conn = None
     try:
         conn = get_db_connection()
+        ensure_chantiers_planification_tables(conn)
         cur = conn.cursor()
         
-        # Récupérer les informations de l'étiquette avant suppression
+        # Récupérer les informations avant suppression
         cur.execute("""
-            SELECT preparateur, date_jour, heure_debut, heure_fin, type_activite, description, group_id
-            FROM etiquettes_planification WHERE id = %s
-        """, (etiquette_id,))
+            SELECT c.type_activite, c.description, c.group_id, 
+                   COUNT(p.id) as nb_planifications
+            FROM chantiers_planification c
+            LEFT JOIN planifications p ON c.id = p.chantier_id
+            WHERE c.id = %s
+            GROUP BY c.id, c.type_activite, c.description, c.group_id
+        """, (chantier_id,))
         
         result = cur.fetchone()
         if not result:
-            raise HTTPException(status_code=404, detail="Étiquette non trouvée")
+            raise HTTPException(status_code=404, detail="Chantier non trouvé")
         
-        preparateur, date_jour, heure_debut, heure_fin, type_activite, description, group_id = result
+        type_activite, description, group_id, nb_planifications = result
         
-        # Supprimer l'étiquette
-        cur.execute("DELETE FROM etiquettes_planification WHERE id = %s", (etiquette_id,))
+        # Supprimer le chantier (les planifications sont supprimées automatiquement via CASCADE)
+        cur.execute("DELETE FROM chantiers_planification WHERE id = %s", (chantier_id,))
         conn.commit()
         
         return {
-            "status": "✅ Étiquette supprimée",
-            "id": etiquette_id,
-            "preparateur": preparateur,
-            "date_jour": date_jour.strftime('%Y-%m-%d'),
-            "heure_debut": heure_debut,
-            "heure_fin": heure_fin,
-            "type": type_activite,
+            "status": "✅ Chantier supprimé",
+            "chantier_id": chantier_id,
+            "type_activite": type_activite,
             "description": description,
-            "group_id": group_id
-        }
-        
-    except HTTPException:
-        if conn:
-            conn.rollback()
-        raise
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
-    finally:
-        if conn:
-            conn.close()
-
-@app.delete("/etiquettes/group/{group_id}")
-def delete_etiquettes_group(group_id: int):
-    """Supprimer toutes les étiquettes d'un groupe lié"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Récupérer le nombre d'étiquettes dans le groupe
-        cur.execute("SELECT COUNT(*) FROM etiquettes_planification WHERE group_id = %s", (group_id,))
-        count = cur.fetchone()[0]
-        
-        if count == 0:
-            raise HTTPException(status_code=404, detail="Aucune étiquette trouvée pour ce groupe")
-        
-        # Supprimer toutes les étiquettes du groupe
-        cur.execute("DELETE FROM etiquettes_planification WHERE group_id = %s", (group_id,))
-        conn.commit()
-        
-        return {
-            "status": "✅ Étiquettes du groupe supprimées",
             "group_id": group_id,
-            "etiquettes_supprimees": count
+            "planifications_supprimees": nb_planifications
         }
         
     except HTTPException:
@@ -2672,82 +2491,6 @@ def delete_etiquettes_group(group_id: int):
         if conn:
             conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
-    finally:
-        if conn:
-            conn.close()
-
-@app.post("/etiquettes/bulk")
-def create_etiquettes_bulk(etiquettes_data: Dict[str, Any]):
-    """Créer plusieurs étiquettes en une seule fois (utile pour les étiquettes liées)"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        etiquettes = etiquettes_data.get('etiquettes', [])
-        if not etiquettes:
-            raise HTTPException(status_code=400, detail="Aucune étiquette à créer")
-        
-        created_etiquettes = []
-        
-        for etiquette in etiquettes:
-            # Valider les données requises
-            required_fields = ['preparateur', 'date_jour', 'heure_debut', 'heure_fin']
-            for field in required_fields:
-                if field not in etiquette:
-                    raise HTTPException(status_code=400, detail=f"Champ requis manquant: {field}")
-            
-            preparateur = etiquette['preparateur']
-            date_jour = etiquette['date_jour']
-            heure_debut = etiquette['heure_debut']
-            heure_fin = etiquette['heure_fin']
-            type_activite = etiquette.get('type', 'activite')
-            description = etiquette.get('description', '')
-            group_id = etiquette.get('group_id', None)
-            
-            # Vérifier la cohérence des heures
-            if heure_debut >= heure_fin:
-                raise HTTPException(status_code=400, detail=f"Heure incohérente pour {preparateur}: {heure_debut}h-{heure_fin}h")
-            
-            # Insérer l'étiquette
-            cur.execute("""
-                INSERT INTO etiquettes_planification 
-                (preparateur, date_jour, heure_debut, heure_fin, type_activite, description, group_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, created_at
-            """, (preparateur, date_jour, heure_debut, heure_fin, type_activite, description, group_id))
-            
-            result = cur.fetchone()
-            etiquette_id, created_at = result
-            
-            created_etiquettes.append({
-                "id": etiquette_id,
-                "preparateur": preparateur,
-                "date_jour": date_jour,
-                "heure_debut": heure_debut,
-                "heure_fin": heure_fin,
-                "type": type_activite,
-                "description": description,
-                "group_id": group_id,
-                "created_at": created_at.isoformat()
-            })
-        
-        conn.commit()
-        
-        return {
-            "status": "✅ Étiquettes créées en lot",
-            "total_created": len(created_etiquettes),
-            "etiquettes": created_etiquettes
-        }
-        
-    except HTTPException:
-        if conn:
-            conn.rollback()
-        raise
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la création en lot: {str(e)}")
     finally:
         if conn:
             conn.close()
