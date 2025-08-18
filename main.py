@@ -24,34 +24,6 @@ def get_db_connection():
         except ImportError:
             raise Exception("Aucun module psycopg disponible")
 
-def ensure_etiquettes_table(conn):
-    """S'assure que la table etiquettes_planification existe"""
-    cur = conn.cursor()
-    
-    # Créer la table si elle n'existe pas
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS etiquettes_planification (
-            id SERIAL PRIMARY KEY,
-            preparateur VARCHAR(100) NOT NULL,
-            date_jour DATE NOT NULL,
-            heure_debut INTEGER NOT NULL,
-            heure_fin INTEGER NOT NULL,
-            type_activite VARCHAR(50) NOT NULL DEFAULT 'activite',
-            description TEXT,
-            group_id INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Index pour optimiser les requêtes
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_etiquettes_preparateur_date 
-        ON etiquettes_planification (preparateur, date_jour)
-    """)
-    
-    conn.commit()
-
 def ensure_chantiers_planification_tables(conn):
     """Créer les nouvelles tables chantiers_planification et planifications"""
     cur = conn.cursor()
@@ -1998,6 +1970,94 @@ def delete_horaires_preparateur(preparateur_nom: str):
             conn.close()
 
 # ===== ENDPOINTS POUR LES ÉTIQUETTES DE PLANIFICATION =====
+
+@app.post("/cleanup/remove-old-structure")
+def remove_old_etiquettes_structure():
+    """Supprimer l'ancienne structure etiquettes_planification"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Vérifier si l'ancienne table existe
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'etiquettes_planification'
+            )
+        """)
+        old_table_exists = cur.fetchone()[0]
+        
+        if old_table_exists:
+            # Compter les enregistrements avant suppression
+            cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
+            records_count = cur.fetchone()[0]
+            
+            # Supprimer la table
+            cur.execute("DROP TABLE IF EXISTS etiquettes_planification CASCADE")
+            conn.commit()
+            
+            return {
+                "status": "✅ Ancienne structure supprimée",
+                "table_removed": "etiquettes_planification",
+                "records_deleted": records_count,
+                "message": "Vous pouvez maintenant utiliser uniquement la nouvelle structure chantiers-planification"
+            }
+        else:
+            return {
+                "status": "ℹ️ Ancienne table déjà absente",
+                "message": "La table etiquettes_planification n'existait pas"
+            }
+            
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {
+            "status": "❌ Erreur suppression",
+            "error": str(e)
+        }
+    finally:
+        if conn:
+            conn.close()
+
+@app.post("/cleanup/fresh-start")
+def fresh_start():
+    """Nettoyage complet - Supprimer ancienne structure et créer la nouvelle"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Supprimer l'ancienne table si elle existe
+        cur.execute("DROP TABLE IF EXISTS etiquettes_planification CASCADE")
+        
+        # Supprimer les nouvelles tables si elles existent (pour un restart propre)
+        cur.execute("DROP TABLE IF EXISTS planifications CASCADE")
+        cur.execute("DROP TABLE IF EXISTS chantiers_planification CASCADE")
+        
+        # Créer la nouvelle structure
+        ensure_chantiers_planification_tables(conn)
+        
+        return {
+            "status": "✅ Redémarrage propre terminé",
+            "actions": [
+                "Ancienne table etiquettes_planification supprimée",
+                "Nouvelles tables chantiers_planification et planifications créées",
+                "Prêt pour créer des données avec POST /chantiers-planification"
+            ],
+            "next_step": "Testez avec POST /chantiers-planification"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {
+            "status": "❌ Erreur redémarrage",
+            "error": str(e)
+        }
+    finally:
+        if conn:
+            conn.close()
 
 @app.post("/chantiers/init")
 def initialize_chantiers_tables():
