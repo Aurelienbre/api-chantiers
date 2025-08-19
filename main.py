@@ -4,6 +4,7 @@ from typing import Dict, Optional, Any
 import os
 import json
 
+
 # Configuration de la base de données
 def get_db_connection():
     """Établit une connexion à la base PostgreSQL"""
