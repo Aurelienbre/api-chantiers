@@ -1,8 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Optional, Any
-
 import os
+import json
 
 # Configuration de la base de données
 def get_db_connection():
@@ -23,6 +23,45 @@ def get_db_connection():
             return psycopg2.connect(database_url)
         except ImportError:
             raise Exception("Aucun module psycopg disponible")
+
+def ensure_etiquettes_grille_tables(conn):
+    """S'assurer que les tables pour les étiquettes de grille existent"""
+    cur = conn.cursor()
+    
+    # Table principale des étiquettes de grille
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS etiquettes_grille (
+            id SERIAL PRIMARY KEY,
+            type_activite VARCHAR(255) NOT NULL,
+            description TEXT,
+            group_id VARCHAR(100),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Table des planifications d'étiquettes
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS planifications_etiquettes (
+            id SERIAL PRIMARY KEY,
+            etiquette_id INTEGER NOT NULL REFERENCES etiquettes_grille(id) ON DELETE CASCADE,
+            date_jour DATE NOT NULL,
+            heure_debut TIME NOT NULL,
+            heure_fin TIME NOT NULL,
+            preparateurs TEXT NOT NULL,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            
+            CONSTRAINT check_heures CHECK (heure_debut < heure_fin)
+        )
+    """)
+    
+    # Index pour améliorer les performances
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_etiquettes_type_activite ON etiquettes_grille (type_activite)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_etiquettes_group_id ON etiquettes_grille (group_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_planif_etiquettes_date ON planifications_etiquettes (date_jour)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_planif_etiquettes_etiquette ON planifications_etiquettes (etiquette_id)")
+    
+    conn.commit()
 
 
 app = FastAPI()
@@ -1477,7 +1516,8 @@ def delete_horaires_preparateur(preparateur_nom: str):
 
 # ===== ENDPOINTS POUR LES ÉTIQUETTES DE PLANIFICATION =====
 
-
+@app.delete("/cleanup-old-etiquettes")
+def cleanup_old_etiquettes():
     """Supprimer l'ancienne structure etiquettes_planification"""
     conn = None
     try:
@@ -1506,7 +1546,7 @@ def delete_horaires_preparateur(preparateur_nom: str):
                 "status": "✅ Ancienne structure supprimée",
                 "table_removed": "etiquettes_planification",
                 "records_deleted": records_count,
-                "message": "Vous pouvez maintenant utiliser uniquement la nouvelle structure chantiers-planification"
+                "message": "Vous pouvez maintenant utiliser uniquement la nouvelle structure etiquettes-grille"
             }
         else:
             return {
@@ -1526,6 +1566,8 @@ def delete_horaires_preparateur(preparateur_nom: str):
             conn.close()
 
 
+@app.post("/reset-etiquettes-grille")
+def reset_etiquettes_grille():
     """Nettoyage complet - Supprimer ancienne structure et créer la nouvelle"""
     conn = None
     try:
@@ -1536,20 +1578,20 @@ def delete_horaires_preparateur(preparateur_nom: str):
         cur.execute("DROP TABLE IF EXISTS etiquettes_planification CASCADE")
         
         # Supprimer les nouvelles tables si elles existent (pour un restart propre)
-        cur.execute("DROP TABLE IF EXISTS planifications CASCADE")
-        cur.execute("DROP TABLE IF EXISTS chantiers_planification CASCADE")
+        cur.execute("DROP TABLE IF EXISTS planifications_etiquettes CASCADE")
+        cur.execute("DROP TABLE IF EXISTS etiquettes_grille CASCADE")
         
         # Créer la nouvelle structure
-        ensure_chantiers_planification_tables(conn)
+        ensure_etiquettes_grille_tables(conn)
         
         return {
             "status": "✅ Redémarrage propre terminé",
             "actions": [
                 "Ancienne table etiquettes_planification supprimée",
-                "Nouvelles tables chantiers_planification et planifications créées",
-                "Prêt pour créer des données avec POST /chantiers-planification"
+                "Nouvelles tables etiquettes_grille et planifications_etiquettes créées",
+                "Prêt pour créer des données avec POST /etiquettes-grille"
             ],
-            "next_step": "Testez avec POST /chantiers-planification"
+            "next_step": "Testez avec POST /etiquettes-grille"
         }
         
     except Exception as e:
@@ -1564,37 +1606,37 @@ def delete_horaires_preparateur(preparateur_nom: str):
             conn.close()
 
 
-# Gestion des étiquettes
+# Gestion des étiquettes de planification
 
-@app.get("/chantiers-planification")
-def get_all_chantiers_planification():
-    """Récupérer tous les chantiers de planification avec leurs planifications"""
+@app.get("/etiquettes-grille")
+def get_all_etiquettes_grille():
+    """Récupérer toutes les étiquettes de la grille semaine avec leurs planifications"""
     conn = None
     try:
         conn = get_db_connection()
-        ensure_chantiers_planification_tables(conn)
+        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
-        # Récupérer tous les chantiers avec leurs planifications
+        # Récupérer toutes les étiquettes avec leurs planifications
         cur.execute("""
             SELECT 
-                c.id, c.type_activite, c.description, c.group_id, 
-                c.created_at, c.updated_at,
+                e.id, e.type_activite, e.description, e.group_id, 
+                e.created_at, e.updated_at,
                 p.id as planif_id, p.date_jour, p.heure_debut, p.heure_fin, p.preparateurs
-            FROM chantiers_planification c
-            LEFT JOIN planifications p ON c.id = p.chantier_id
-            ORDER BY c.created_at DESC, p.date_jour ASC, p.heure_debut ASC
+            FROM etiquettes_grille e
+            LEFT JOIN planifications_etiquettes p ON e.id = p.etiquette_id
+            ORDER BY e.created_at DESC, p.date_jour ASC, p.heure_debut ASC
         """)
         
         results = cur.fetchall()
         
-        # Grouper les résultats par chantier
-        chantiers = {}
+        # Grouper les résultats par étiquette
+        etiquettes = {}
         for row in results:
-            chantier_id = row[0]
+            etiquette_id = row[0]
             
-            if chantier_id not in chantiers:
-                chantiers[chantier_id] = {
+            if etiquette_id not in etiquettes:
+                etiquettes[etiquette_id] = {
                     "id": row[0],
                     "type_activite": row[1],
                     "description": row[2],
@@ -1606,7 +1648,7 @@ def get_all_chantiers_planification():
             
             # Ajouter la planification si elle existe
             if row[6]:  # planif_id
-                chantiers[chantier_id]["planifications"].append({
+                etiquettes[etiquette_id]["planifications"].append({
                     "id": row[6],
                     "date_jour": row[7].strftime('%Y-%m-%d'),
                     "heure_debut": row[8],
@@ -1614,12 +1656,12 @@ def get_all_chantiers_planification():
                     "preparateurs": row[10]
                 })
         
-        chantiers_list = list(chantiers.values())
+        etiquettes_list = list(etiquettes.values())
         
         return {
-            "status": "✅ Chantiers récupérés",
-            "count": len(chantiers_list),
-            "chantiers": chantiers_list
+            "status": "✅ Étiquettes récupérées",
+            "count": len(etiquettes_list),
+            "etiquettes": etiquettes_list
         }
         
     except Exception as e:
@@ -1628,41 +1670,41 @@ def get_all_chantiers_planification():
         if conn:
             conn.close()
 
-@app.post("/chantiers-planification")
-def create_chantier_planification(chantier_data: Dict[str, Any]):
-    """Créer un nouveau chantier de planification avec ses planifications"""
+@app.post("/etiquettes-grille")
+def create_etiquette_grille(etiquette_data: Dict[str, Any]):
+    """Créer une nouvelle étiquette de la grille semaine avec ses planifications"""
     conn = None
     try:
         conn = get_db_connection()
-        ensure_chantiers_planification_tables(conn)
+        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
         # Valider les données requises
         required_fields = ['type_activite', 'planifications']
         for field in required_fields:
-            if field not in chantier_data:
+            if field not in etiquette_data:
                 raise HTTPException(status_code=400, detail=f"Champ requis manquant: {field}")
         
-        if not chantier_data['planifications']:
+        if not etiquette_data['planifications']:
             raise HTTPException(status_code=400, detail="Au moins une planification est requise")
         
-        # Créer le chantier principal
+        # Créer l'étiquette principale
         cur.execute("""
-            INSERT INTO chantiers_planification (type_activite, description, group_id)
+            INSERT INTO etiquettes_grille (type_activite, description, group_id)
             VALUES (%s, %s, %s)
             RETURNING id, created_at, updated_at
         """, (
-            chantier_data['type_activite'],
-            chantier_data.get('description'),
-            chantier_data.get('group_id')
+            etiquette_data['type_activite'],
+            etiquette_data.get('description'),
+            etiquette_data.get('group_id')
         ))
         
-        chantier_result = cur.fetchone()
-        chantier_id = chantier_result[0]
+        etiquette_result = cur.fetchone()
+        etiquette_id = etiquette_result[0]
         
         # Créer les planifications
         planifications_creees = []
-        for planif in chantier_data['planifications']:
+        for planif in etiquette_data['planifications']:
             # Valider les champs de planification
             required_planif_fields = ['date_jour', 'heure_debut', 'heure_fin', 'preparateurs']
             for field in required_planif_fields:
@@ -1675,11 +1717,11 @@ def create_chantier_planification(chantier_data: Dict[str, Any]):
             
             # Insérer la planification
             cur.execute("""
-                INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
+                INSERT INTO planifications_etiquettes (etiquette_id, date_jour, heure_debut, heure_fin, preparateurs)
                 VALUES (%s, %s, %s, %s, %s)
                 RETURNING id, created_at
             """, (
-                chantier_id,
+                etiquette_id,
                 planif['date_jour'],
                 planif['heure_debut'],
                 planif['heure_fin'],
@@ -1699,14 +1741,14 @@ def create_chantier_planification(chantier_data: Dict[str, Any]):
         conn.commit()
         
         return {
-            "status": "✅ Chantier créé",
-            "chantier": {
-                "id": chantier_id,
-                "type_activite": chantier_data['type_activite'],
-                "description": chantier_data.get('description'),
-                "group_id": chantier_data.get('group_id'),
-                "created_at": chantier_result[1].isoformat(),
-                "updated_at": chantier_result[2].isoformat(),
+            "status": "✅ Étiquette créée",
+            "etiquette": {
+                "id": etiquette_id,
+                "type_activite": etiquette_data['type_activite'],
+                "description": etiquette_data.get('description'),
+                "group_id": etiquette_data.get('group_id'),
+                "created_at": etiquette_result[1].isoformat(),
+                "updated_at": etiquette_result[2].isoformat(),
                 "planifications": planifications_creees
             }
         }
@@ -1723,205 +1765,52 @@ def create_chantier_planification(chantier_data: Dict[str, Any]):
         if conn:
             conn.close()
 
-
-    """Migrer les données des étiquettes vers la nouvelle structure chantiers"""
+@app.put("/etiquettes-grille/{etiquette_id}")
+def update_etiquette_grille(etiquette_id: int, etiquette_data: Dict[str, Any]):
+    """Mettre à jour une étiquette de la grille semaine"""
     conn = None
     try:
         conn = get_db_connection()
-        ensure_etiquettes_table(conn)
-        ensure_chantiers_planification_tables(conn)
+        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
-        # D'abord, vérifier combien d'étiquettes nous avons
-        cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
-        total_etiquettes = cur.fetchone()[0]
-        
-        if total_etiquettes == 0:
-            return {
-                "status": "⚠️ Aucune donnée à migrer",
-                "message": "La table etiquettes_planification est vide"
-            }
-        
-        chantiers_crees = []
-        
-        # Étape 1: Migrer les étiquettes avec group_id (groupées)
-        cur.execute("""
-            SELECT DISTINCT group_id, type_activite, description
-            FROM etiquettes_planification 
-            WHERE group_id IS NOT NULL
-            ORDER BY group_id
-        """)
-        
-        groups_distincts = cur.fetchall()
-        print(f"Groups distincts trouvés: {len(groups_distincts)}")
-        
-        for group_id, type_activite, description in groups_distincts:
-            # Créer le chantier pour ce groupe
-            cur.execute("""
-                INSERT INTO chantiers_planification (type_activite, description, group_id)
-                VALUES (%s, %s, %s)
-                RETURNING id
-            """, (type_activite, description, group_id))
-            
-            chantier_id = cur.fetchone()[0]
-            
-            # Récupérer toutes les étiquettes de ce groupe
-            cur.execute("""
-                SELECT preparateur, date_jour, heure_debut, heure_fin
-                FROM etiquettes_planification 
-                WHERE group_id = %s
-                ORDER BY date_jour, heure_debut
-            """, (group_id,))
-            
-            etiquettes_du_groupe = cur.fetchall()
-            
-            # Grouper par date/heure pour regrouper les préparateurs
-            planifications_map = {}
-            for preparateur, date_jour, heure_debut, heure_fin in etiquettes_du_groupe:
-                date_str = date_jour.strftime('%Y-%m-%d')
-                key = f"{date_str}_{heure_debut}_{heure_fin}"
-                
-                if key not in planifications_map:
-                    planifications_map[key] = {
-                        'date_jour': date_str,
-                        'heure_debut': heure_debut,
-                        'heure_fin': heure_fin,
-                        'preparateurs': []
-                    }
-                planifications_map[key]['preparateurs'].append(preparateur)
-            
-            # Créer les planifications regroupées
-            planifications_creees = 0
-            for planif_data in planifications_map.values():
-                cur.execute("""
-                    INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (
-                    chantier_id,
-                    planif_data['date_jour'],
-                    planif_data['heure_debut'],
-                    planif_data['heure_fin'],
-                    planif_data['preparateurs']
-                ))
-                planifications_creees += 1
-            
-            chantiers_crees.append({
-                "chantier_id": chantier_id,
-                "type_activite": type_activite,
-                "description": description,
-                "group_id": group_id,
-                "etiquettes_source": len(etiquettes_du_groupe),
-                "planifications_creees": planifications_creees
-            })
-        
-        # Étape 2: Migrer les étiquettes individuelles (sans group_id)
-        cur.execute("""
-            SELECT id, preparateur, date_jour, heure_debut, heure_fin, type_activite, description
-            FROM etiquettes_planification 
-            WHERE group_id IS NULL
-            ORDER BY id
-        """)
-        
-        etiquettes_individuelles = cur.fetchall()
-        
-        for etiquette_id, preparateur, date_jour, heure_debut, heure_fin, type_activite, description in etiquettes_individuelles:
-            # Créer un chantier individuel
-            cur.execute("""
-                INSERT INTO chantiers_planification (type_activite, description, group_id)
-                VALUES (%s, %s, %s)
-                RETURNING id
-            """, (type_activite, description, etiquette_id))  # Utiliser l'ancien ID comme group_id
-            
-            chantier_id = cur.fetchone()[0]
-            
-            # Créer la planification unique
-            cur.execute("""
-                INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (chantier_id, date_jour, heure_debut, heure_fin, [preparateur]))
-            
-            chantiers_crees.append({
-                "chantier_id": chantier_id,
-                "type_activite": type_activite,
-                "description": description,
-                "group_id": f"individual_{etiquette_id}",
-                "etiquettes_source": 1,
-                "planifications_creees": 1
-            })
-        
-        conn.commit()
-        
-        return {
-            "status": "✅ Migration terminée",
-            "summary": {
-                "total_etiquettes_source": total_etiquettes,
-                "groups_distincts": len(groups_distincts),
-                "etiquettes_individuelles": len(etiquettes_individuelles),
-                "chantiers_crees": len(chantiers_crees),
-                "total_planifications": sum(c["planifications_creees"] for c in chantiers_crees)
-            },
-            "chantiers": chantiers_crees[:3],  # Afficher les 3 premiers
-            "message": "Migration réussie ! Testez avec GET /chantiers-planification"
-        }
-        
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        return {
-            "status": "❌ Erreur migration",
-            "error": str(e),
-            "debug": "Vérifiez les logs pour plus de détails"
-        }
-    finally:
-        if conn:
-            conn.close()
-
-@app.put("/chantiers-planification/{chantier_id}")
-def update_chantier_planification(chantier_id: int, chantier_data: Dict[str, Any]):
-    """Mettre à jour un chantier de planification"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        ensure_chantiers_planification_tables(conn)
-        cur = conn.cursor()
-        
-        # Vérifier que le chantier existe
-        cur.execute("SELECT id FROM chantiers_planification WHERE id = %s", (chantier_id,))
+        # Vérifier que l'étiquette existe
+        cur.execute("SELECT id FROM etiquettes_grille WHERE id = %s", (etiquette_id,))
         if not cur.fetchone():
-            raise HTTPException(status_code=404, detail="Chantier non trouvé")
+            raise HTTPException(status_code=404, detail="Étiquette non trouvée")
         
-        # Mettre à jour les informations du chantier
+        # Mettre à jour les informations de l'étiquette
         update_fields = []
         update_values = []
         
         for field in ['type_activite', 'description', 'group_id']:
-            if field in chantier_data:
+            if field in etiquette_data:
                 update_fields.append(f"{field} = %s")
-                update_values.append(chantier_data[field])
+                update_values.append(etiquette_data[field])
         
         if update_fields:
             update_fields.append("updated_at = CURRENT_TIMESTAMP")
-            update_values.append(chantier_id)
+            update_values.append(etiquette_id)
             
             query = f"""
-                UPDATE chantiers_planification 
+                UPDATE etiquettes_grille 
                 SET {', '.join(update_fields)}
                 WHERE id = %s
             """
             cur.execute(query, update_values)
         
         # Mettre à jour les planifications si fournies
-        if 'planifications' in chantier_data:
+        if 'planifications' in etiquette_data:
             # Supprimer les anciennes planifications
-            cur.execute("DELETE FROM planifications WHERE chantier_id = %s", (chantier_id,))
+            cur.execute("DELETE FROM planifications_etiquettes WHERE etiquette_id = %s", (etiquette_id,))
             
             # Créer les nouvelles planifications
-            for planif in chantier_data['planifications']:
+            for planif in etiquette_data['planifications']:
                 cur.execute("""
-                    INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
+                    INSERT INTO planifications_etiquettes (etiquette_id, date_jour, heure_debut, heure_fin, preparateurs)
                     VALUES (%s, %s, %s, %s, %s)
                 """, (
-                    chantier_id,
+                    etiquette_id,
                     planif['date_jour'],
                     planif['heure_debut'],
                     planif['heure_fin'],
@@ -1930,44 +1819,9 @@ def update_chantier_planification(chantier_id: int, chantier_data: Dict[str, Any
         
         conn.commit()
         
-        # Récupérer le chantier mis à jour
-        cur.execute("""
-            SELECT c.id, c.type_activite, c.description, c.group_id, c.updated_at,
-                   p.id, p.date_jour, p.heure_debut, p.heure_fin, p.preparateurs
-            FROM chantiers_planification c
-            LEFT JOIN planifications p ON c.id = p.chantier_id
-            WHERE c.id = %s
-            ORDER BY p.date_jour, p.heure_debut
-        """, (chantier_id,))
-        
-        results = cur.fetchall()
-        if not results:
-            raise HTTPException(status_code=404, detail="Chantier non trouvé après mise à jour")
-        
-        # Construire la réponse
-        first_row = results[0]
-        chantier = {
-            "id": first_row[0],
-            "type_activite": first_row[1],
-            "description": first_row[2],
-            "group_id": first_row[3],
-            "updated_at": first_row[4].isoformat(),
-            "planifications": []
-        }
-        
-        for row in results:
-            if row[5]:  # Si planification existe
-                chantier["planifications"].append({
-                    "id": row[5],
-                    "date_jour": row[6].strftime('%Y-%m-%d'),
-                    "heure_debut": row[7],
-                    "heure_fin": row[8],
-                    "preparateurs": row[9]
-                })
-        
         return {
-            "status": "✅ Chantier mis à jour",
-            "chantier": chantier
+            "status": "✅ Étiquette mise à jour",
+            "etiquette_id": etiquette_id
         }
         
     except HTTPException:
@@ -1982,38 +1836,38 @@ def update_chantier_planification(chantier_id: int, chantier_data: Dict[str, Any
         if conn:
             conn.close()
 
-@app.delete("/chantiers-planification/{chantier_id}")
-def delete_chantier_planification(chantier_id: int):
-    """Supprimer un chantier de planification et toutes ses planifications"""
+@app.delete("/etiquettes-grille/{etiquette_id}")
+def delete_etiquette_grille(etiquette_id: int):
+    """Supprimer une étiquette de la grille semaine et toutes ses planifications"""
     conn = None
     try:
         conn = get_db_connection()
-        ensure_chantiers_planification_tables(conn)
+        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
         # Récupérer les informations avant suppression
         cur.execute("""
-            SELECT c.type_activite, c.description, c.group_id, 
+            SELECT e.type_activite, e.description, e.group_id, 
                    COUNT(p.id) as nb_planifications
-            FROM chantiers_planification c
-            LEFT JOIN planifications p ON c.id = p.chantier_id
-            WHERE c.id = %s
-            GROUP BY c.id, c.type_activite, c.description, c.group_id
-        """, (chantier_id,))
+            FROM etiquettes_grille e
+            LEFT JOIN planifications_etiquettes p ON e.id = p.etiquette_id
+            WHERE e.id = %s
+            GROUP BY e.id, e.type_activite, e.description, e.group_id
+        """, (etiquette_id,))
         
         result = cur.fetchone()
         if not result:
-            raise HTTPException(status_code=404, detail="Chantier non trouvé")
+            raise HTTPException(status_code=404, detail="Étiquette non trouvée")
         
         type_activite, description, group_id, nb_planifications = result
         
-        # Supprimer le chantier (les planifications sont supprimées automatiquement via CASCADE)
-        cur.execute("DELETE FROM chantiers_planification WHERE id = %s", (chantier_id,))
+        # Supprimer l'étiquette (les planifications sont supprimées automatiquement via CASCADE)
+        cur.execute("DELETE FROM etiquettes_grille WHERE id = %s", (etiquette_id,))
         conn.commit()
         
         return {
-            "status": "✅ Chantier supprimé",
-            "chantier_id": chantier_id,
+            "status": "✅ Étiquette supprimée",
+            "etiquette_id": etiquette_id,
             "type_activite": type_activite,
             "description": description,
             "group_id": group_id,
@@ -2031,6 +1885,197 @@ def delete_chantier_planification(chantier_id: int):
     finally:
         if conn:
             conn.close()
+
+
+# ========================================================================
+# ENDPOINTS DE NETTOYAGE COMPLET DE LA BASE DE DONNÉES
+# ========================================================================
+
+@app.delete("/admin/reset-database")
+def reset_complete_database():
+    """DANGER: Vider complètement toute la base de données - À utiliser avec précaution!"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Compter les enregistrements avant suppression
+        tables_info = []
+        
+        # Liste des tables principales de l'application
+        tables_to_check = [
+            'chantiers', 'planifications', 'soldes', 'preparateurs', 
+            'disponibilites', 'etiquettes_grille', 'planifications_etiquettes',
+            'horaires_preparateurs', 'etiquettes_planification'
+        ]
+        
+        # Compter les enregistrements dans chaque table
+        for table_name in tables_to_check:
+            try:
+                cur.execute(f"SELECT COUNT(*) FROM {table_name}")
+                count = cur.fetchone()[0]
+                if count > 0:
+                    tables_info.append({"table": table_name, "records": count})
+            except Exception:
+                # Table n'existe pas, on continue
+                pass
+        
+        total_records_before = sum(t["records"] for t in tables_info)
+        
+        if total_records_before == 0:
+            return {
+                "status": "ℹ️ Base de données déjà vide",
+                "message": "Aucune donnée à supprimer",
+                "tables_info": []
+            }
+        
+        # Supprimer toutes les données dans l'ordre (contraintes de clés étrangères)
+        deletion_summary = []
+        
+        # 1. Supprimer les tables de planifications en premier (dépendent des autres)
+        for table in ['planifications', 'planifications_etiquettes', 'soldes', 'disponibilites']:
+            try:
+                cur.execute(f"DELETE FROM {table}")
+                deleted = cur.rowcount
+                if deleted > 0:
+                    deletion_summary.append({"table": table, "deleted": deleted})
+            except Exception as e:
+                # Table n'existe peut-être pas
+                pass
+        
+        # 2. Supprimer les tables principales
+        for table in ['chantiers', 'etiquettes_grille', 'preparateurs', 'horaires_preparateurs']:
+            try:
+                cur.execute(f"DELETE FROM {table}")
+                deleted = cur.rowcount
+                if deleted > 0:
+                    deletion_summary.append({"table": table, "deleted": deleted})
+            except Exception as e:
+                # Table n'existe peut-être pas
+                pass
+        
+        # 3. Supprimer les anciennes tables si elles existent
+        for table in ['etiquettes_planification']:
+            try:
+                cur.execute(f"DELETE FROM {table}")
+                deleted = cur.rowcount
+                if deleted > 0:
+                    deletion_summary.append({"table": table, "deleted": deleted})
+            except Exception as e:
+                # Table n'existe peut-être pas
+                pass
+        
+        # 4. Reset des séquences (pour repartir les IDs à 1)
+        sequences_reset = []
+        for table in ['chantiers', 'etiquettes_grille', 'preparateurs', 'planifications', 'planifications_etiquettes', 'soldes', 'disponibilites', 'horaires_preparateurs']:
+            try:
+                cur.execute(f"ALTER SEQUENCE {table}_id_seq RESTART WITH 1")
+                sequences_reset.append(table)
+            except Exception:
+                # Séquence n'existe peut-être pas
+                pass
+        
+        conn.commit()
+        
+        total_deleted = sum(d["deleted"] for d in deletion_summary)
+        
+        return {
+            "status": "🗑️ Base de données vidée complètement",
+            "summary": {
+                "total_records_before": total_records_before,
+                "total_deleted": total_deleted,
+                "tables_processed": len(deletion_summary),
+                "sequences_reset": len(sequences_reset)
+            },
+            "deletion_details": deletion_summary,
+            "sequences_reset": sequences_reset,
+            "message": "⚠️ TOUTES les données ont été supprimées définitivement !",
+            "next_steps": [
+                "Vous pouvez maintenant recréer vos données proprement",
+                "Les IDs recommenceront à 1 pour toutes les tables",
+                "Les structures de tables sont conservées"
+            ]
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors du reset de la base: {str(e)}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+@app.delete("/admin/drop-all-tables")
+def drop_all_tables():
+    """DANGER EXTRÊME: Supprimer complètement toutes les tables - Structure ET données!"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Lister toutes les tables de l'application
+        cur.execute("""
+            SELECT tablename 
+            FROM pg_tables 
+            WHERE schemaname = 'public' 
+            AND tablename IN ('chantiers', 'planifications', 'soldes', 'preparateurs', 
+                             'disponibilites', 'etiquettes_grille', 'planifications_etiquettes',
+                             'horaires_preparateurs', 'etiquettes_planification')
+        """)
+        
+        tables_found = [row[0] for row in cur.fetchall()]
+        
+        if not tables_found:
+            return {
+                "status": "ℹ️ Aucune table à supprimer",
+                "message": "Les tables de l'application n'existent pas",
+                "tables_found": []
+            }
+        
+        # Supprimer toutes les tables (CASCADE pour gérer les contraintes)
+        tables_dropped = []
+        for table_name in tables_found:
+            try:
+                cur.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
+                tables_dropped.append(table_name)
+            except Exception as e:
+                print(f"Erreur suppression table {table_name}: {e}")
+        
+        conn.commit()
+        
+        return {
+            "status": "💥 Tables supprimées complètement",
+            "summary": {
+                "tables_found": len(tables_found),
+                "tables_dropped": len(tables_dropped)
+            },
+            "tables_dropped": tables_dropped,
+            "message": "⚠️ STRUCTURE ET DONNÉES supprimées définitivement !",
+            "warning": "Les tables devront être recréées lors de la prochaine utilisation de l'API",
+            "next_steps": [
+                "Redémarrez l'API pour recréer les tables automatiquement",
+                "Ou utilisez les endpoints POST pour déclencher la création des tables"
+            ]
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression des tables: {str(e)}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
 
 if __name__ == "__main__":
     import uvicorn
