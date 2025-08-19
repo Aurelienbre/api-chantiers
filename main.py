@@ -1,13 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Optional, Any
-from datetime import datetime
-import json
+
 import os
 
 # Configuration de la base de données
 def get_db_connection():
-    """Établit une connexion à la base PostgreSQL et assure l'initialisation des tables de préparation"""
+    """Établit une connexion à la base PostgreSQL"""
     database_url = os.environ.get('DATABASE_URL')
     
     if not database_url:
@@ -15,136 +14,16 @@ def get_db_connection():
     
     try:
         # Essayer psycopg3 d'abord
+        import psycopg
+        return psycopg.connect(database_url)
+    except ImportError:
         try:
-            import psycopg
-            conn = psycopg.connect(database_url)
-        except ImportError:
             # Fallback sur psycopg2
             import psycopg2
-            conn = psycopg2.connect(database_url)
-        
-        # Assurer que les tables de PRÉPARATION existent (Beta-API)
-        ensure_preparation_tables(conn)
-        return conn
-        
-    except ImportError:
-        raise Exception("Aucun module psycopg disponible")
+            return psycopg2.connect(database_url)
+        except ImportError:
+            raise Exception("Aucun module psycopg disponible")
 
-def ensure_preparation_tables(conn):
-    """Créer/vérifier les tables pour les chantiers de PRÉPARATION (Beta-API uniquement)"""
-    cur = conn.cursor()
-    
-    # Table des chantiers de préparation (Beta-API)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS chantiers (
-            id TEXT PRIMARY KEY,
-            label TEXT,
-            status TEXT,
-            prepTime INTEGER,
-            endDate TEXT,
-            preparateur_nom TEXT,
-            ChargeRestante INTEGER,
-            forced_planning_lock JSONB DEFAULT NULL
-        )
-    """)
-    
-    # Table des planifications PRÉPARATION (semaine/minutes) - STRUCTURE CORRECTE pour Beta-API !
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS planifications (
-            id SERIAL PRIMARY KEY,
-            chantier_id TEXT REFERENCES chantiers(id) ON DELETE CASCADE,
-            semaine TEXT NOT NULL,
-            minutes INTEGER NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Table des soldes
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS soldes (
-            id SERIAL PRIMARY KEY,
-            chantier_id TEXT REFERENCES chantiers(id) ON DELETE CASCADE,
-            semaine TEXT NOT NULL,
-            minutes INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            
-            CONSTRAINT unique_solde_chantier_semaine UNIQUE (chantier_id, semaine),
-            CONSTRAINT check_minutes_positive CHECK (minutes >= 0)
-        )
-    """)
-    
-    # Index pour optimiser les requêtes
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_chantier_id ON planifications(chantier_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_semaine ON planifications(semaine)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_soldes_chantier_id ON soldes(chantier_id)")
-    
-    conn.commit()
-
-def ensure_chantiers_planification_tables(conn):
-    """Créer les tables pour les étiquettes de planification (GRILLE SEMAINE UNIQUEMENT)"""
-    cur = conn.cursor()
-    
-    # Table principale des chantiers de planification (Grille semaine)
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS chantiers_planification (
-            id SERIAL PRIMARY KEY,
-            type_activite VARCHAR(50) NOT NULL,
-            description TEXT,
-            group_id INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Table des planifications ÉTIQUETTES (détails jour/heure/préparateurs) - RENOMMÉE !
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS planifications_etiquettes (
-            id SERIAL PRIMARY KEY,
-            chantier_id INTEGER REFERENCES chantiers_planification(id) ON DELETE CASCADE,
-            date_jour DATE NOT NULL,
-            heure_debut INTEGER NOT NULL,
-            heure_fin INTEGER NOT NULL,
-            preparateurs TEXT[] NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Index pour optimiser les requêtes
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_etiquettes_chantier_id ON planifications_etiquettes(chantier_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_etiquettes_date ON planifications_etiquettes(date_jour)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_chantiers_planification_group_id ON chantiers_planification(group_id)")
-    
-    conn.commit()
-
-def ensure_etiquettes_table(conn):
-    """Créer la table des étiquettes de planification (ancienne structure - Grille semaine)"""
-    cur = conn.cursor()
-    
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS etiquettes_planification (
-            id SERIAL PRIMARY KEY,
-            preparateur VARCHAR(100) NOT NULL,
-            date_jour DATE NOT NULL,
-            heure_debut INTEGER NOT NULL,
-            heure_fin INTEGER NOT NULL,
-            type_activite VARCHAR(50) NOT NULL DEFAULT 'activite',
-            description TEXT,
-            group_id INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Index pour optimiser les requêtes
-    cur.execute("""
-        CREATE INDEX IF NOT EXISTS idx_etiquettes_preparateur_date 
-        ON etiquettes_planification (preparateur, date_jour)
-    """)
-    
-    conn.commit()
 
 app = FastAPI()
 app.add_middleware(
@@ -154,654 +33,174 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"message": "API Pilotage RIP fonctionne!", "status": "✅ Version avec séparation des systèmes Chantiers vs Étiquettes"}
 
-@app.get("/debug/system-status")
-def debug_system_status():
-    """Diagnostic complet des deux systèmes : Chantiers de préparation vs Étiquettes"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        status = {
-            "timestamp": datetime.now().isoformat(),
-            "chantiers_preparation": {},
-            "etiquettes_grille": {},
-            "conflicts": [],
-            "recommendations": []
-        }
-        
-        # ===== DIAGNOSTIC SYSTÈME CHANTIERS DE PRÉPARATION (BETA-API) =====
-        try:
-            # Table chantiers (préparation)
-            cur.execute("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'chantiers')")
-            chantiers_table_exists = cur.fetchone()[0]
-            
-            if chantiers_table_exists:
-                cur.execute("SELECT COUNT(*) FROM chantiers")
-                chantiers_count = cur.fetchone()[0]
-                
-                cur.execute("SELECT COUNT(DISTINCT status) FROM chantiers")
-                statuses_count = cur.fetchone()[0]
-            else:
-                chantiers_count = 0
-                statuses_count = 0
-                
-            status["chantiers_preparation"] = {
-                "table_exists": chantiers_table_exists,
-                "total_chantiers": chantiers_count,
-                "distinct_statuses": statuses_count,
-                "usage": "Beta-API.html - Gestion des chantiers RIP",
-                "structure": "ID, label, status, prepTime, endDate, preparateur"
-            }
-            
-        except Exception as e:
-            status["chantiers_preparation"] = {"error": str(e)}
-        
-        # ===== DIAGNOSTIC SYSTÈME ÉTIQUETTES (GRILLE SEMAINE) =====
-        etiquettes_count = 0
-        chantiers_planif_count = 0
-        planifications_count = 0
-        
-        try:
-            # Table étiquettes_planification (ancienne structure)
-            cur.execute("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'etiquettes_planification')")
-            etiquettes_table_exists = cur.fetchone()[0]
-            
-            if etiquettes_table_exists:
-                cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
-                etiquettes_count = cur.fetchone()[0]
-        except:
-            etiquettes_table_exists = False
-            
-        try:
-            # Tables chantiers_planification + planifications (nouvelle structure)
-            cur.execute("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'chantiers_planification')")
-            chantiers_planif_table_exists = cur.fetchone()[0]
-            
-            cur.execute("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'planifications')")
-            planifications_table_exists = cur.fetchone()[0]
-            
-            if chantiers_planif_table_exists:
-                cur.execute("SELECT COUNT(*) FROM chantiers_planification")
-                chantiers_planif_count = cur.fetchone()[0]
-                
-            if planifications_table_exists:
-                cur.execute("SELECT COUNT(*) FROM planifications")
-                planifications_count = cur.fetchone()[0]
-        except:
-            chantiers_planif_table_exists = False
-            planifications_table_exists = False
-            
-        status["etiquettes_grille"] = {
-            "ancienne_structure": {
-                "table_exists": etiquettes_table_exists,
-                "total_etiquettes": etiquettes_count,
-                "usage": "Grille semaine.html - Étiquettes visuelles"
-            },
-            "nouvelle_structure": {
-                "chantiers_planification_exists": chantiers_planif_table_exists,
-                "planifications_exists": planifications_table_exists,
-                "total_chantiers": chantiers_planif_count,
-                "total_planifications": planifications_count,
-                "usage": "Grille semaine.html - Structure moderne"
-            }
-        }
-        
-        # ===== DÉTECTION DES CONFLITS =====
-        if chantiers_table_exists and (etiquettes_table_exists or chantiers_planif_table_exists):
-            status["conflicts"].append({
-                "type": "endpoints_collision",
-                "description": "Risque de collision sur l'endpoint /chantiers",
-                "impact": "Les deux systèmes utilisent des endpoints similaires"
-            })
-            
-        if etiquettes_table_exists and chantiers_planif_table_exists:
-            status["conflicts"].append({
-                "type": "double_structure",
-                "description": "Deux structures d'étiquettes coexistent",
-                "impact": "Confusion possible entre ancienne et nouvelle structure"
-            })
-            
-        # ===== RECOMMANDATIONS =====
-        if len(status["conflicts"]) == 0:
-            status["recommendations"].append("✅ Aucun conflit détecté")
-        else:
-            status["recommendations"].extend([
-                "🧹 Utilisez DELETE /etiquettes/cleanup pour supprimer toutes les tables d'étiquettes",
-                "🗑️ Ou utilisez DELETE /etiquettes/data-only pour vider les données seulement",
-                "🔄 Choisissez une seule structure : étiquettes OU chantiers_planification"
-            ])
-            
-@app.get("/debug/conflict-check")
-def debug_conflict_check():
-    """Diagnostic spécifique du conflit de tables planifications"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        result = {
-            "timestamp": datetime.now().isoformat(),
-            "conflict_detected": False,
-            "planifications_table_analysis": {},
-            "recommendations": []
-        }
-        
-        # Analyser la table planifications
-        cur.execute("""
-            SELECT column_name, data_type 
-            FROM information_schema.columns 
-            WHERE table_name = 'planifications'
-            ORDER BY ordinal_position
-        """)
-        columns = cur.fetchall()
-        
-        if columns:
-            column_names = [col[0] for col in columns]
-            result["planifications_table_analysis"]["columns"] = column_names
-            
-            # Détecter le conflit
-            has_semaine = 'semaine' in column_names
-            has_date_jour = 'date_jour' in column_names
-            
-            if has_semaine and has_date_jour:
-                result["conflict_detected"] = True
-                result["planifications_table_analysis"]["conflict_type"] = "STRUCTURE_MIXTE"
-                result["planifications_table_analysis"]["issue"] = "Table contient les colonnes des deux systèmes"
-            elif has_date_jour and not has_semaine:
-                result["conflict_detected"] = True  
-                result["planifications_table_analysis"]["conflict_type"] = "MAUVAISE_STRUCTURE"
-                result["planifications_table_analysis"]["issue"] = "Table configurée pour étiquettes au lieu de préparation"
-            elif has_semaine and not has_date_jour:
-                result["conflict_detected"] = False
-                result["planifications_table_analysis"]["conflict_type"] = "STRUCTURE_OK"
-                result["planifications_table_analysis"]["issue"] = "Table correctement configurée pour Beta-API"
-            
-            # Compter les données
-            cur.execute("SELECT COUNT(*) FROM planifications")
-            result["planifications_table_analysis"]["total_records"] = cur.fetchone()[0]
-            
-        else:
-            result["planifications_table_analysis"]["exists"] = False
-        
-        # Vérifier les autres tables d'étiquettes
-        tables_etiquettes = []
-        for table in ['etiquettes_planification', 'chantiers_planification', 'planifications_etiquettes']:
-            cur.execute(f"SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = '{table}')")
-            if cur.fetchone()[0]:
-                tables_etiquettes.append(table)
-        
-        result["tables_etiquettes_existantes"] = tables_etiquettes
-        
-        if result["conflict_detected"]:
-            result["recommendations"] = [
-                "🚨 CONFLIT DÉTECTÉ : Table planifications mal configurée",
-                "🧹 Utilisez DELETE /etiquettes/cleanup pour nettoyer complètement",
-                "🔄 Ou utilisez DELETE /etiquettes/data-only pour vider les données",
-                "✅ Puis testez Beta-API"
-            ]
-        else:
-            result["recommendations"] = [
-                "✅ Aucun conflit détecté dans la table planifications",
-                "🎯 La structure semble correcte pour Beta-API"
-            ]
-            
-        return result
-        
-    except Exception as e:
-        return {
-            "status": "❌ Erreur lors du diagnostic",
-            "error": str(e)
-        }
-    finally:
-        if conn:
-            conn.close()
+# ========================================================================
+# GESTION DES CHANTIERS DE PLANIFICATION (Beta-API.html)
+# ========================================================================
 
-@app.get("/test-database")
-def test_database():
-    """Test de connexion à la base PostgreSQL"""
-    database_url = os.environ.get('DATABASE_URL')
-    
-    if not database_url:
-        return {
-            "status": "❌ Échec",
-            "error": "DATABASE_URL non définie",
-            "solution": "Vérifiez la variable d'environnement sur Render"
-        }
-    
-    try:
-        # Test d'import psycopg3 (ou psycopg2 en fallback)
-        try:
-            import psycopg
-            psycopg_status = f"✅ psycopg3 v{psycopg.__version__}"
-            psycopg_module = psycopg
-        except ImportError:
-            import psycopg2
-            psycopg_status = f"✅ psycopg2 v{psycopg2.__version__}"
-            psycopg_module = psycopg2
-    except ImportError as e:
-        return {
-            "status": "❌ Échec", 
-            "error": f"Aucun module psycopg disponible: {e}",
-            "database_url_present": True,
-            "solution": "Installer psycopg[binary] ou psycopg2-binary"
-        }
-    
-    try:
-        # Test de connexion
-        from urllib.parse import urlparse
-        url = urlparse(database_url)
-        
-        # Adapter les paramètres selon la version psycopg
-        if 'psycopg3' in psycopg_status:
-            # psycopg3 utilise 'dbname' au lieu de 'database'
-            conn = psycopg_module.connect(
-                dbname=url.path[1:],
-                user=url.username,
-                password=url.password,
-                host=url.hostname,
-                port=url.port
-            )
-        else:
-            # psycopg2 utilise 'database'
-            conn = psycopg_module.connect(
-                database=url.path[1:],
-                user=url.username,
-                password=url.password,
-                host=url.hostname,
-                port=url.port
-            )
-        
-        # Test d'une requête simple
-        cur = conn.cursor()
-        cur.execute("SELECT version();")
-        db_version = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';")
-        table_count = cur.fetchone()[0]
-        
-        conn.close()
-        
-        return {
-            "status": "✅ Succès complet !",
-            "psycopg": psycopg_status,
-            "database_url": "✅ Présente",
-            "connection": "✅ Réussie",
-            "database_version": db_version[:50] + "...",
-            "tables_count": f"{table_count} tables publiques",
-            "next_step": "Base prête pour la migration des données !"
-        }
-        
-    except Exception as e:
-        return {
-            "status": "❌ Échec connexion",
-            "psycopg": psycopg_status,
-            "database_url": "✅ Présente", 
-            "connection_error": str(e),
-            "solution": "Vérifiez les paramètres de la base PostgreSQL"
-        }
 
-@app.get("/migrate-data")
-def migrate_data():
-    """Migration des données db.json vers PostgreSQL"""
+# Preparateurs
+
+@app.get("/preparateurs")
+def get_preparateurs():
+    """Récupérer tous les préparateurs depuis PostgreSQL"""
     try:
         from database_config import get_database_connection
-        import json
         
-        # Vérifier si les tables existent déjà
         conn = get_database_connection()
         cur = conn.cursor()
         
-        # Vérifier si les données sont déjà migrées
-        cur.execute("SELECT COUNT(*) FROM preparateurs")
-        data_count = cur.fetchone()[0]
+        cur.execute("SELECT nom, nni FROM preparateurs ORDER BY nom")
+        rows = cur.fetchall()
+        conn.close()
         
-        if data_count > 0:
-            conn.close()
-            return {"status": "✅ Données déjà migrées", "message": f"{data_count} préparateurs trouvés"}
+        # Convertir en dictionnaire nom -> nni
+        preparateurs = {row[0]: row[1] for row in rows}
         
-        # Créer les tables PostgreSQL si elles n'existent pas
-        cur.execute("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'preparateurs')")
-        tables_exist = cur.fetchone()[0]
+        return preparateurs
         
-        if not tables_exist:
-            cur.execute("""
-            CREATE TABLE preparateurs (
-                nom TEXT PRIMARY KEY,
-                nni TEXT
-            );
+    except Exception as e:
+        return {"error": f"Erreur base de données: {str(e)}"}
 
-            CREATE TABLE disponibilites (
-                id SERIAL PRIMARY KEY,
-                preparateur_nom TEXT,
-                semaine TEXT,
-                minutes INTEGER,
-                updatedAt TEXT,
-                FOREIGN KEY (preparateur_nom) REFERENCES preparateurs(nom)
-            );
-
-            CREATE TABLE chantiers (
-                id TEXT PRIMARY KEY,
-                label TEXT,
-                status TEXT,
-                prepTime INTEGER,
-                endDate TEXT,
-                preparateur_nom TEXT,
-                ChargeRestante INTEGER,
-                forced_planning_lock JSONB DEFAULT NULL,
-                FOREIGN KEY (preparateur_nom) REFERENCES preparateurs(nom)
-            );
-
-            CREATE TABLE planifications (
-                id SERIAL PRIMARY KEY,
-                chantier_id TEXT,
-                semaine TEXT,
-                minutes INTEGER,
-                FOREIGN KEY (chantier_id) REFERENCES chantiers(id)
-            );
-            """)
-            conn.commit()
+@app.post("/preparateurs")
+def sync_preparateurs(preparateurs_data: Dict[str, Any]):
+    """Synchroniser les préparateurs avec PostgreSQL"""
+    try:
+        from database_config import get_database_connection
         
-        # Migration des verrous de planification forcée (pour les bases existantes)
-        try:
-            # Vérifier si la colonne forced_planning_lock existe déjà
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        preparateurs = preparateurs_data.get('preparateurs', {})
+        synced_count = 0
+        
+        # Insérer ou mettre à jour chaque préparateur
+        for nom, nni in preparateurs.items():
             cur.execute("""
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_name = 'chantiers' AND column_name = 'forced_planning_lock'
-            """)
-            column_exists = cur.fetchone()
-            
-            if not column_exists:
-                # Ajouter la colonne forced_planning_lock aux bases existantes
-                cur.execute("""
-                    ALTER TABLE chantiers 
-                    ADD COLUMN forced_planning_lock JSONB DEFAULT NULL
-                """)
-                
-                # Créer l'index GIN pour améliorer les performances sur les requêtes JSON
-                cur.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_chantiers_forced_planning_lock 
-                    ON chantiers USING GIN (forced_planning_lock)
-                """)
-                
-                conn.commit()
-                print("✅ Migration: Colonne forced_planning_lock ajoutée aux chantiers existants")
-            
-        except Exception as e:
-            print(f"⚠️ Avertissement migration verrous: {e}")
-            # Ne pas faire échouer toute la migration pour cette erreur
+                INSERT INTO preparateurs (nom, nni) 
+                VALUES (%s, %s) 
+                ON CONFLICT (nom) DO UPDATE SET nni = EXCLUDED.nni
+            """, (nom, nni))
+            synced_count += 1
         
-        # Charger et migrer les données db.json
-        try:
-            # Essayer plusieurs chemins possibles pour db.json
-            json_paths = ['db.json', 'API/db.json', './db.json']
-            data = None
-            
-            for path in json_paths:
-                try:
-                    with open(path, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        break
-                except FileNotFoundError:
-                    continue
-            
-            if data is None:
-                raise FileNotFoundError("db.json non trouvé")
-                
-        except FileNotFoundError:
-            # Si db.json n'existe pas, créer des données de test
-            data = {
-                "preparateurs": {
-                    "Eric CHAPUIS": "F51742",
-                    "Sylvain MATHAIS": "H13773"
-                },
-                "chantiers": {},
-                "data": {}
-            }
+        conn.commit()
+        conn.close()
         
-        # Insérer les préparateurs
-        for nom, nni in data.get('preparateurs', {}).items():
-            cur.execute("INSERT INTO preparateurs (nom, nni) VALUES (%s, %s) ON CONFLICT (nom) DO NOTHING", (nom, nni))
+        return {"status": "✅ Préparateurs synchronisés", "count": synced_count}
         
-        # Insérer les chantiers
-        for chantier_id, chantier in data.get('chantiers', {}).items():
-            cur.execute("""
-                INSERT INTO chantiers (id, label, status, prepTime, endDate, preparateur_nom, ChargeRestante) 
-                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING
-            """, (
-                chantier.get('id', chantier_id),
-                chantier.get('label', ''),
-                chantier.get('status', 'Nouveau'),
-                chantier.get('prepTime', 0),
-                chantier.get('endDate', ''),
-                chantier.get('preparateur', ''),
-                chantier.get('ChargeRestante', chantier.get('prepTime', 0))
-            ))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+
+@app.put("/preparateurs/{ancien_nom}")
+def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
+    """Modifier un préparateur (nom et/ou NNI) avec mise à jour en cascade"""
+    try:
+        from database_config import get_database_connection
+        
+        nouveau_nom = preparateur_data.get('nom', ancien_nom)
+        nouveau_nni = preparateur_data.get('nni')
+        
+        if not nouveau_nni:
+            raise HTTPException(status_code=400, detail="NNI requis")
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        # Vérifier que l'ancien préparateur existe
+        cur.execute("SELECT nom FROM preparateurs WHERE nom = %s", (ancien_nom,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail=f"Préparateur '{ancien_nom}' non trouvé")
+        
+        # Si le nom change, vérifier que le nouveau nom n'existe pas déjà
+        if ancien_nom != nouveau_nom:
+            cur.execute("SELECT nom FROM preparateurs WHERE nom = %s", (nouveau_nom,))
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail=f"Le préparateur '{nouveau_nom}' existe déjà")
+        
+        # ⚠️ Pour contourner les contraintes de clé étrangère, on doit d'abord 
+        # créer le nouveau préparateur, puis supprimer l'ancien
+        
+        if ancien_nom != nouveau_nom:
+            # 1. Créer le nouveau préparateur
+            cur.execute("INSERT INTO preparateurs (nom, nni) VALUES (%s, %s)", (nouveau_nom, nouveau_nni))
             
-            # Insérer les planifications du chantier
-            for semaine, minutes in chantier.get('planification', {}).items():
-                cur.execute("""
-                    INSERT INTO planifications (chantier_id, semaine, minutes) 
-                    VALUES (%s, %s, %s)
-                """, (chantier['id'], semaine, minutes))
-        
-        # Insérer les disponibilités (data)
-        for preparateur_nom, disponibilites in data.get('data', {}).items():
-            for semaine, info in disponibilites.items():
-                # Gérer les différents formats de données
-                if isinstance(info, dict):
-                    minutes = info.get('minutes', 0)
-                    updated_at = info.get('updatedAt', '')
-                else:
-                    # Si c'est juste un nombre
-                    minutes = info if isinstance(info, (int, float)) else 0
-                    updated_at = ''
-                
-                cur.execute("""
-                    INSERT INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt) 
-                    VALUES (%s, %s, %s, %s)
-                """, (preparateur_nom, semaine, minutes, updated_at))
+            # 2. Mettre à jour les chantiers pour pointer vers le nouveau préparateur
+            cur.execute("UPDATE chantiers SET preparateur_nom = %s WHERE preparateur_nom = %s", (nouveau_nom, ancien_nom))
+            chantiers_updated = cur.rowcount
+            
+            # 3. Mettre à jour les disponibilités pour pointer vers le nouveau préparateur
+            cur.execute("UPDATE disponibilites SET preparateur_nom = %s WHERE preparateur_nom = %s", (nouveau_nom, ancien_nom))
+            disponibilites_updated = cur.rowcount
+            
+            # 4. Supprimer l'ancien préparateur (maintenant plus référencé)
+            cur.execute("DELETE FROM preparateurs WHERE nom = %s", (ancien_nom,))
+            preparateur_updated = cur.rowcount
+        else:
+            # Si seul le NNI change, mise à jour simple
+            cur.execute("UPDATE preparateurs SET nni = %s WHERE nom = %s", (nouveau_nni, ancien_nom))
+            preparateur_updated = cur.rowcount
+            chantiers_updated = 0
+            disponibilites_updated = 0
         
         conn.commit()
         conn.close()
         
         return {
-            "status": "✅ Migration complète !",
-            "message": "Tables créées et données migrées",
-            "preparateurs": len(data.get('preparateurs', {})),
-            "chantiers": len(data.get('chantiers', {})),
-            "next_step": "API prête à fonctionner !"
+            "status": "✅ Préparateur modifié avec succès",
+            "ancien_nom": ancien_nom,
+            "nouveau_nom": nouveau_nom,
+            "nouveau_nni": nouveau_nni,
+            "chantiers_mis_a_jour": chantiers_updated,
+            "disponibilites_mises_a_jour": disponibilites_updated
         }
         
     except Exception as e:
-        return {
-            "status": "❌ Erreur", 
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "debug_info": "Erreur lors de la migration des données"
-        }
-
-@app.get("/migrate-forced-planning")
-def migrate_forced_planning():
-    """Migration spécifique pour ajouter le support des verrous de planification forcée"""
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    
+@app.delete("/preparateurs/{nom}")
+def delete_preparateur(nom: str):
+    """Supprimer un préparateur de PostgreSQL"""
     try:
         from database_config import get_database_connection
         
         conn = get_database_connection()
         cur = conn.cursor()
         
-        # Vérifier si la colonne forced_planning_lock existe déjà
-        cur.execute("""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = 'chantiers' AND column_name = 'forced_planning_lock'
-        """)
-        column_exists = cur.fetchone()
+        # Supprimer d'abord les disponibilités liées à ce préparateur
+        cur.execute("DELETE FROM disponibilites WHERE preparateur_nom = %s", (nom,))
+        disponibilites_deleted = cur.rowcount
         
-        if column_exists:
-            conn.close()
+        # Supprimer le préparateur
+        cur.execute("DELETE FROM preparateurs WHERE nom = %s", (nom,))
+        preparateur_deleted = cur.rowcount
+        
+        # Mettre les chantiers assignés à ce préparateur comme non-assignés
+        cur.execute("UPDATE chantiers SET preparateur_nom = NULL WHERE preparateur_nom = %s", (nom,))
+        chantiers_updated = cur.rowcount
+        
+        conn.commit()
+        conn.close()
+        
+        if preparateur_deleted > 0:
             return {
-                "status": "✅ Migration déjà effectuée", 
-                "message": "La colonne forced_planning_lock existe déjà"
+                "status": "✅ Préparateur supprimé", 
+                "nom": nom,
+                "disponibilites_supprimees": disponibilites_deleted,
+                "chantiers_mis_a_jour": chantiers_updated
             }
-        
-        # Ajouter la colonne forced_planning_lock aux bases existantes
-        cur.execute("""
-            ALTER TABLE chantiers 
-            ADD COLUMN forced_planning_lock JSONB DEFAULT NULL
-        """)
-        
-        # Créer l'index GIN pour améliorer les performances sur les requêtes JSON
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_chantiers_forced_planning_lock 
-            ON chantiers USING GIN (forced_planning_lock)
-        """)
-        
-        conn.commit()
-        conn.close()
-        
-        return {
-            "status": "✅ Migration réussie !",
-            "message": "Colonne forced_planning_lock ajoutée avec succès",
-            "next_step": "Les verrous de planification forcée sont maintenant disponibles"
-        }
-        
+        else:
+            return {"status": "⚠️ Préparateur non trouvé", "nom": nom}
+            
     except Exception as e:
-        return {
-            "status": "❌ Erreur migration", 
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "debug_info": "Erreur lors de la migration des verrous"
-        }
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
 
-@app.get("/migrate-soldes")
-def migrate_soldes():
-    """Migration pour créer la table des soldes de planification"""
-    conn = None
-    try:
-        from database_config import get_database_connection
-        
-        conn = get_database_connection()
-        cur = conn.cursor()
-        
-        # Vérifier si la table soldes existe déjà
-        cur.execute("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_name = 'soldes'
-        """)
-        table_exists = cur.fetchone()
-        
-        if table_exists:
-            return {
-                "status": "✅ Migration déjà effectuée", 
-                "message": "La table soldes existe déjà",
-                "table_info": "Table prête à recevoir les données"
-            }
-        
-        # Création de la table soldes
-        cur.execute("""
-            CREATE TABLE soldes (
-                id SERIAL PRIMARY KEY,
-                chantier_id VARCHAR(255) NOT NULL,
-                semaine VARCHAR(20) NOT NULL,
-                minutes INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                
-                -- Contrainte d'unicité sur la combinaison chantier_id + semaine
-                CONSTRAINT unique_solde_chantier_semaine UNIQUE (chantier_id, semaine),
-                
-                -- Contraintes de validation
-                CONSTRAINT check_minutes_positive CHECK (minutes >= 0),
-                CONSTRAINT check_semaine_format CHECK (semaine ~ '^[0-9]{4}-W[0-9]{2}-1$')
-            )
-        """)
-        
-        # Index pour améliorer les performances
-        cur.execute("""
-            CREATE INDEX idx_soldes_chantier_id ON soldes (chantier_id)
-        """)
-        
-        cur.execute("""
-            CREATE INDEX idx_soldes_semaine ON soldes (semaine)
-        """)
-        
-        # Trigger pour mettre à jour updated_at automatiquement
-        cur.execute("""
-            CREATE OR REPLACE FUNCTION update_updated_at_column()
-            RETURNS TRIGGER AS $$
-            BEGIN
-                NEW.updated_at = CURRENT_TIMESTAMP;
-                RETURN NEW;
-            END;
-            $$ language 'plpgsql'
-        """)
-        
-        cur.execute("""
-            CREATE TRIGGER update_soldes_updated_at 
-            BEFORE UPDATE ON soldes 
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()
-        """)
-        
-        conn.commit()
-        
-        # Vérifier la création
-        cur.execute("""
-            SELECT column_name, data_type, is_nullable
-            FROM information_schema.columns 
-            WHERE table_name = 'soldes'
-            ORDER BY ordinal_position
-        """)
-        
-        columns = []
-        for row in cur.fetchall():
-            column_name, data_type, is_nullable = row
-            columns.append(f"{column_name}: {data_type} ({'NULL' if is_nullable == 'YES' else 'NOT NULL'})")
-        
-        return {
-            "status": "✅ Migration réussie !",
-            "message": "Table soldes créée avec succès",
-            "structure": {
-                "columns": columns,
-                "constraints": [
-                    "Unicité sur (chantier_id, semaine)",
-                    "Minutes >= 0", 
-                    "Format de semaine validé (YYYY-WXX-1)"
-                ],
-                "indexes": ["idx_soldes_chantier_id", "idx_soldes_semaine"],
-                "triggers": ["update_soldes_updated_at"]
-            },
-            "next_step": "La table soldes est maintenant prête à recevoir les données"
-        }
-        
-    except Exception as e:
-        if conn:
-            try:
-                conn.rollback()
-            except:
-                pass
-        return {
-            "status": "❌ Erreur migration", 
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "debug_info": "Erreur lors de la création de la table soldes"
-        }
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except:
-                pass
+
+
+# Chantiers
 
 @app.get("/chantiers")
 def get_chantiers():
-    """Récupérer tous les chantiers de préparation depuis PostgreSQL (Beta-API)"""
+    """Récupérer tous les chantiers depuis PostgreSQL"""
     conn = None
     try:
         from database_config import get_database_connection
@@ -908,206 +307,9 @@ def get_chantiers():
             except:
                 pass
 
-@app.get("/preparateurs")
-def get_preparateurs():
-    """Récupérer tous les préparateurs depuis PostgreSQL"""
-    try:
-        from database_config import get_database_connection
-        
-        conn = get_database_connection()
-        cur = conn.cursor()
-        
-        cur.execute("SELECT nom, nni FROM preparateurs ORDER BY nom")
-        rows = cur.fetchall()
-        conn.close()
-        
-        # Convertir en dictionnaire nom -> nni
-        preparateurs = {row[0]: row[1] for row in rows}
-        
-        return preparateurs
-        
-    except Exception as e:
-        return {"error": f"Erreur base de données: {str(e)}"}
-
-@app.post("/preparateurs")
-def sync_preparateurs(preparateurs_data: Dict[str, Any]):
-    """Synchroniser les préparateurs avec PostgreSQL"""
-    try:
-        from database_config import get_database_connection
-        
-        conn = get_database_connection()
-        cur = conn.cursor()
-        
-        preparateurs = preparateurs_data.get('preparateurs', {})
-        synced_count = 0
-        
-        # Insérer ou mettre à jour chaque préparateur
-        for nom, nni in preparateurs.items():
-            cur.execute("""
-                INSERT INTO preparateurs (nom, nni) 
-                VALUES (%s, %s) 
-                ON CONFLICT (nom) DO UPDATE SET nni = EXCLUDED.nni
-            """, (nom, nni))
-            synced_count += 1
-        
-        conn.commit()
-        conn.close()
-        
-        return {"status": "✅ Préparateurs synchronisés", "count": synced_count}
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
-
-@app.delete("/preparateurs/{nom}")
-def delete_preparateur(nom: str):
-    """Supprimer un préparateur de PostgreSQL"""
-    try:
-        from database_config import get_database_connection
-        
-        conn = get_database_connection()
-        cur = conn.cursor()
-        
-        # Supprimer d'abord les disponibilités liées à ce préparateur
-        cur.execute("DELETE FROM disponibilites WHERE preparateur_nom = %s", (nom,))
-        disponibilites_deleted = cur.rowcount
-        
-        # Supprimer le préparateur
-        cur.execute("DELETE FROM preparateurs WHERE nom = %s", (nom,))
-        preparateur_deleted = cur.rowcount
-        
-        # Mettre les chantiers assignés à ce préparateur comme non-assignés
-        cur.execute("UPDATE chantiers SET preparateur_nom = NULL WHERE preparateur_nom = %s", (nom,))
-        chantiers_updated = cur.rowcount
-        
-        conn.commit()
-        conn.close()
-        
-        if preparateur_deleted > 0:
-            return {
-                "status": "✅ Préparateur supprimé", 
-                "nom": nom,
-                "disponibilites_supprimees": disponibilites_deleted,
-                "chantiers_mis_a_jour": chantiers_updated
-            }
-        else:
-            return {"status": "⚠️ Préparateur non trouvé", "nom": nom}
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
-
-@app.put("/preparateurs/{ancien_nom}")
-def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
-    """Modifier un préparateur (nom et/ou NNI) avec mise à jour en cascade"""
-    try:
-        from database_config import get_database_connection
-        
-        nouveau_nom = preparateur_data.get('nom', ancien_nom)
-        nouveau_nni = preparateur_data.get('nni')
-        
-        if not nouveau_nni:
-            raise HTTPException(status_code=400, detail="NNI requis")
-        
-        conn = get_database_connection()
-        cur = conn.cursor()
-        
-        # Vérifier que l'ancien préparateur existe
-        cur.execute("SELECT nom FROM preparateurs WHERE nom = %s", (ancien_nom,))
-        if not cur.fetchone():
-            raise HTTPException(status_code=404, detail=f"Préparateur '{ancien_nom}' non trouvé")
-        
-        # Si le nom change, vérifier que le nouveau nom n'existe pas déjà
-        if ancien_nom != nouveau_nom:
-            cur.execute("SELECT nom FROM preparateurs WHERE nom = %s", (nouveau_nom,))
-            if cur.fetchone():
-                raise HTTPException(status_code=409, detail=f"Le préparateur '{nouveau_nom}' existe déjà")
-        
-        # ⚠️ Pour contourner les contraintes de clé étrangère, on doit d'abord 
-        # créer le nouveau préparateur, puis supprimer l'ancien
-        
-        if ancien_nom != nouveau_nom:
-            # 1. Créer le nouveau préparateur
-            cur.execute("INSERT INTO preparateurs (nom, nni) VALUES (%s, %s)", (nouveau_nom, nouveau_nni))
-            
-            # 2. Mettre à jour les chantiers pour pointer vers le nouveau préparateur
-            cur.execute("UPDATE chantiers SET preparateur_nom = %s WHERE preparateur_nom = %s", (nouveau_nom, ancien_nom))
-            chantiers_updated = cur.rowcount
-            
-            # 3. Mettre à jour les disponibilités pour pointer vers le nouveau préparateur
-            cur.execute("UPDATE disponibilites SET preparateur_nom = %s WHERE preparateur_nom = %s", (nouveau_nom, ancien_nom))
-            disponibilites_updated = cur.rowcount
-            
-            # 4. Supprimer l'ancien préparateur (maintenant plus référencé)
-            cur.execute("DELETE FROM preparateurs WHERE nom = %s", (ancien_nom,))
-            preparateur_updated = cur.rowcount
-        else:
-            # Si seul le NNI change, mise à jour simple
-            cur.execute("UPDATE preparateurs SET nni = %s WHERE nom = %s", (nouveau_nni, ancien_nom))
-            preparateur_updated = cur.rowcount
-            chantiers_updated = 0
-            disponibilites_updated = 0
-        
-        conn.commit()
-        conn.close()
-        
-        return {
-            "status": "✅ Préparateur modifié avec succès",
-            "ancien_nom": ancien_nom,
-            "nouveau_nom": nouveau_nom,
-            "nouveau_nni": nouveau_nni,
-            "chantiers_mis_a_jour": chantiers_updated,
-            "disponibilites_mises_a_jour": disponibilites_updated
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
-
-@app.get("/disponibilites")
-def get_disponibilites():
-    """Récupérer toutes les disponibilités depuis PostgreSQL"""
-    try:
-        from database_config import get_database_connection
-        
-        conn = get_database_connection()
-        cur = conn.cursor()
-        
-        cur.execute("""
-            SELECT preparateur_nom, semaine, minutes, updatedAt 
-            FROM disponibilites 
-            ORDER BY preparateur_nom, semaine
-        """)
-        
-        rows = cur.fetchall()
-        conn.close()
-        
-        # Regrouper par préparateur
-        disponibilites = {}
-        for row in rows:
-            preparateur = row[0]
-            if preparateur not in disponibilites:
-                disponibilites[preparateur] = {}
-            
-            disponibilites[preparateur][row[1]] = {
-                "minutes": row[2],
-                "updatedAt": row[3]
-            }
-        
-        return {"data": disponibilites}
-        
-    except Exception as e:
-        return {"error": f"Erreur base de données: {str(e)}"}
-
-# ========================================================================
-# 🏗️ ENDPOINTS CRUD POUR CHANTIERS DE PRÉPARATION (BETA-API.html)
-# ========================================================================
-# Ces endpoints gèrent les chantiers classiques de préparation avec :
-# - Structure : ID, label, status, prepTime, endDate, preparateur, ChargeRestante
-# - Table principale : `chantiers`
-# - Tables liées : `planifications` (semaine/minutes), `soldes`
-# - Usage : Interface Beta-API.html pour la gestion des chantiers RIP
-
 @app.post("/chantiers")
 def create_chantier(chantier: Dict[str, Any]):
-    """Créer un nouveau chantier de préparation dans PostgreSQL (Beta-API)"""
+    """Créer un nouveau chantier dans PostgreSQL"""
     try:
         from database_config import get_database_connection
         
@@ -1142,10 +344,10 @@ def create_chantier(chantier: Dict[str, Any]):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
-
+    
 @app.put("/chantiers/{chantier_id}")
 def update_chantier(chantier_id: str, chantier: Dict[str, Any]):
-    """Mettre à jour un chantier de préparation existant (Beta-API)"""
+    """Mettre à jour un chantier existant"""
     try:
         from database_config import get_database_connection
         
@@ -1193,10 +395,14 @@ def update_chantier(chantier_id: str, chantier: Dict[str, Any]):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    
+
+
+# Disponibilité et planification
 
 @app.put("/planification")
 def update_planification(planif: Dict[str, Any]):
-    """Mettre à jour la planification d'un chantier de préparation avec préservation intelligente de l'historique (Beta-API)"""
+    """Mettre à jour la planification d'un chantier avec préservation intelligente de l'historique"""
     try:
         from database_config import get_database_connection
         from datetime import datetime, timedelta
@@ -1300,7 +506,7 @@ def update_disponibilites(dispo: Dict[str, Any]):
 
 @app.put("/sync-planning")
 def sync_complete_planning(data: Dict[str, Any]):
-    """Synchronisation complète de la planification après répartition automatique (Beta-API)"""
+    """Synchronisation complète de la planification après répartition automatique"""
     try:
         from database_config import get_database_connection
         
@@ -1363,7 +569,43 @@ def sync_complete_planning(data: Dict[str, Any]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
 
-# ===== ENDPOINTS POUR VERROUS DE PLANIFICATION FORCÉE =====
+@app.get("/disponibilites")
+def get_disponibilites():
+    """Récupérer toutes les disponibilités depuis PostgreSQL"""
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT preparateur_nom, semaine, minutes, updatedAt 
+            FROM disponibilites 
+            ORDER BY preparateur_nom, semaine
+        """)
+        
+        rows = cur.fetchall()
+        conn.close()
+        
+        # Regrouper par préparateur
+        disponibilites = {}
+        for row in rows:
+            preparateur = row[0]
+            if preparateur not in disponibilites:
+                disponibilites[preparateur] = {}
+            
+            disponibilites[preparateur][row[1]] = {
+                "minutes": row[2],
+                "updatedAt": row[3]
+            }
+        
+        return {"data": disponibilites}
+        
+    except Exception as e:
+        return {"error": f"Erreur base de données: {str(e)}"}
+
+
+# Verouillages des chantiers
 
 @app.get("/chantiers/{chantier_id}/forced-planning-lock")
 def get_forced_planning_lock(chantier_id: str):
@@ -1578,8 +820,7 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
             except:
                 pass
 
-@app.get("/debug-locks")
-def debug_forced_planning_locks():
+
     """DEBUG: Voir tous les verrous de planification forcée"""
     conn = None
     try:
@@ -1623,44 +864,8 @@ def debug_forced_planning_locks():
             except:
                 pass
 
-@app.post("/clear-all-locks")
-def clear_all_forced_planning_locks():
-    """URGENCE: Supprimer TOUS les verrous de planification forcée"""
-    conn = None
-    try:
-        from database_config import get_database_connection
-        
-        conn = get_database_connection()
-        cur = conn.cursor()
-        
-        # Supprimer TOUS les verrous
-        cur.execute("""
-            UPDATE chantiers 
-            SET forced_planning_lock = NULL
-        """)
-        
-        cleared_count = cur.rowcount
-        conn.commit()
-        
-        print(f"🧹 NETTOYAGE D'URGENCE: {cleared_count} verrous supprimés")
-        
-        return {
-            "status": "🧹 TOUS les verrous supprimés",
-            "cleared_count": cleared_count,
-            "message": "Base nettoyée, testez maintenant vos fonctions"
-        }
-        
-    except Exception as e:
-        print(f"🚨 Erreur CLEAR ALL locks: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except:
-                pass
 
-# ===== ENDPOINTS CRUD POUR SOLDES =====
+# Soldes des chantiers
 
 @app.get("/soldes/{chantier_id}")
 def get_soldes(chantier_id: str):
@@ -1862,7 +1067,7 @@ def delete_solde(chantier_id: str, semaine: str):
 
 @app.delete("/chantiers/{chantier_id}")
 def delete_chantier(chantier_id: str):
-    """Supprimer un chantier de préparation spécifique et toutes ses données associées (Beta-API)"""
+    """Supprimer un chantier spécifique et toutes ses données associées"""
     conn = None
     try:
         from database_config import get_database_connection
@@ -1917,7 +1122,7 @@ def delete_chantier(chantier_id: str):
 
 @app.delete("/chantiers")
 def delete_all_chantiers():
-    """Supprimer tous les chantiers de préparation et toutes leurs données associées (Beta-API)"""
+    """Supprimer tous les chantiers et toutes leurs données associées"""
     conn = None
     try:
         from database_config import get_database_connection
@@ -1973,7 +1178,13 @@ def delete_all_chantiers():
             except:
                 pass
 
-# ===== ENDPOINTS POUR LES HORAIRES DES PRÉPARATEURS =====
+
+
+# ========================================================================
+#  GESTION DES ETIQUETTES DE PLANIFICATION (Grille semaine.html)
+# ========================================================================
+
+# Horaires des préparateurs 
 
 @app.get("/horaires")
 def get_all_horaires():
@@ -2264,18 +1475,9 @@ def delete_horaires_preparateur(preparateur_nom: str):
         if conn:
             conn.close()
 
-# ========================================================================
-# 🏷️ ENDPOINTS POUR LES ÉTIQUETTES DE PLANIFICATION (GRILLE SEMAINE)
-# ========================================================================
-# Ces endpoints gèrent les étiquettes visuelles de la grille semaine avec :
-# - Structure : type_activite, description, date_jour, heure_debut/fin, preparateurs[]
-# - Tables : `etiquettes_planification` OU nouvelles tables `chantiers_planification` + `planifications`
-# - Usage : Interface Grille semaine.html pour les étiquettes visuelles
-
 # ===== ENDPOINTS POUR LES ÉTIQUETTES DE PLANIFICATION =====
 
-@app.post("/cleanup/remove-old-structure")
-def remove_old_etiquettes_structure():
+
     """Supprimer l'ancienne structure etiquettes_planification"""
     conn = None
     try:
@@ -2323,8 +1525,7 @@ def remove_old_etiquettes_structure():
         if conn:
             conn.close()
 
-@app.post("/cleanup/fresh-start")
-def fresh_start():
+
     """Nettoyage complet - Supprimer ancienne structure et créer la nouvelle"""
     conn = None
     try:
@@ -2362,374 +1563,26 @@ def fresh_start():
         if conn:
             conn.close()
 
-@app.post("/chantiers/init")
-def initialize_chantiers_tables():
-    """Initialiser les nouvelles tables chantiers_planification et planifications"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        ensure_chantiers_planification_tables(conn)
-        return {
-            "status": "✅ Nouvelles tables initialisées",
-            "tables": ["chantiers_planification", "planifications"],
-            "message": "Prêt pour la migration des données"
-        }
-    except Exception as e:
-        return {
-            "status": "❌ Erreur initialisation",
-            "error": str(e)
-        }
-    finally:
-        if conn:
-            conn.close()
 
-@app.get("/debug/nouvelles-tables")
-def debug_nouvelles_tables():
-    """Vérifier la structure des nouvelles tables chantiers_planification et planifications"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        result = {}
-        
-        # Vérifier chantiers_planification
-        cur.execute("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_name = 'chantiers_planification'
-            )
-        """)
-        
-        if cur.fetchone()[0]:
-            cur.execute("""
-                SELECT column_name, data_type, is_nullable
-                FROM information_schema.columns 
-                WHERE table_name = 'chantiers_planification'
-                ORDER BY ordinal_position
-            """)
-            result["chantiers_planification"] = {
-                "exists": True,
-                "columns": [{"name": col[0], "type": col[1], "nullable": col[2]} for col in cur.fetchall()]
-            }
-        else:
-            result["chantiers_planification"] = {"exists": False}
-        
-        # Vérifier planifications
-        cur.execute("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_name = 'planifications'
-            )
-        """)
-        
-        if cur.fetchone()[0]:
-            cur.execute("""
-                SELECT column_name, data_type, is_nullable
-                FROM information_schema.columns 
-                WHERE table_name = 'planifications'
-                ORDER BY ordinal_position
-            """)
-            result["planifications"] = {
-                "exists": True,
-                "columns": [{"name": col[0], "type": col[1], "nullable": col[2]} for col in cur.fetchall()]
-            }
-        else:
-            result["planifications"] = {"exists": False}
-        
-        return {
-            "status": "✅ Vérification terminée",
-            "tables": result
-        }
-        
-    except Exception as e:
-        return {
-            "status": "❌ Erreur vérification",
-            "error": str(e)
-        }
-    finally:
-        if conn:
-            conn.close()
-
-@app.get("/debug/etiquettes-structure")
-def debug_etiquettes_structure():
-    """Vérifier la structure de la table etiquettes_planification"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Vérifier si la table existe
-        cur.execute("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_name = 'etiquettes_planification'
-            )
-        """)
-        table_exists = cur.fetchone()[0]
-        
-        if not table_exists:
-            return {
-                "status": "❌ Table etiquettes_planification n'existe pas",
-                "solution": "Utilisez POST /etiquettes/init pour la créer"
-            }
-        
-        # Récupérer la structure des colonnes
-        cur.execute("""
-            SELECT column_name, data_type, is_nullable
-            FROM information_schema.columns 
-            WHERE table_name = 'etiquettes_planification'
-            ORDER BY ordinal_position
-        """)
-        columns = cur.fetchall()
-        
-        # Récupérer quelques exemples de données
-        cur.execute("SELECT * FROM etiquettes_planification LIMIT 3")
-        sample_data = cur.fetchall()
-        
-        # Compter les enregistrements
-        cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
-        total_count = cur.fetchone()[0]
-        
-        return {
-            "status": "✅ Structure analysée",
-            "table_exists": table_exists,
-            "total_records": total_count,
-            "columns": [{"name": col[0], "type": col[1], "nullable": col[2]} for col in columns],
-            "sample_data": sample_data[:2] if sample_data else [],
-            "column_names": [col[0] for col in columns]
-        }
-        
-    except Exception as e:
-        return {
-            "status": "❌ Erreur analyse",
-            "error": str(e)
-        }
-    finally:
-        if conn:
-            conn.close()
-
-@app.post("/etiquettes/init")
-def init_etiquettes_table():
-    """Initialiser la table des étiquettes de planification (Grille semaine - ancienne structure)"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        ensure_etiquettes_table(conn)
-        
-        # Vérifier que la table a été créée
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT COUNT(*) FROM information_schema.tables 
-            WHERE table_schema = 'public' AND table_name = 'etiquettes_planification'
-        """)
-        table_exists = cur.fetchone()[0] > 0
-        
-        return {
-            "status": "✅ Table étiquettes initialisée",
-            "table_exists": table_exists,
-            "message": "La table etiquettes_planification est prête à être utilisée"
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur lors de l'initialisation: {str(e)}")
-    finally:
-        if conn:
-            conn.close()
-
-@app.delete("/etiquettes/cleanup")
-def cleanup_etiquettes_tables():
-    """SUPPRESSION COMPLÈTE : Supprimer toutes les tables d'étiquettes et leurs données (Grille semaine)"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Compter les données avant suppression
-        try:
-            cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
-            etiquettes_count = cur.fetchone()[0]
-        except:
-            etiquettes_count = 0
-            
-        try:
-            cur.execute("SELECT COUNT(*) FROM chantiers_planification")
-            chantiers_planif_count = cur.fetchone()[0]
-        except:
-            chantiers_planif_count = 0
-            
-        try:
-            cur.execute("SELECT COUNT(*) FROM planifications_etiquettes")
-            planifs_etiquettes_count = cur.fetchone()[0]
-        except:
-            planifs_etiquettes_count = 0
-            
-        # ⚠️ ATTENTION : Supprimer l'ancienne table planifications qui cause le conflit
-        try:
-            cur.execute("SELECT COUNT(*) FROM planifications WHERE chantier_id IN (SELECT id FROM chantiers_planification)")
-            old_planifs_count = cur.fetchone()[0]
-        except:
-            old_planifs_count = 0
-        
-        # Supprimer les tables d'étiquettes (ordre important pour les contraintes)
-        cur.execute("DROP TABLE IF EXISTS planifications_etiquettes CASCADE")
-        cur.execute("DROP TABLE IF EXISTS chantiers_planification CASCADE") 
-        cur.execute("DROP TABLE IF EXISTS etiquettes_planification CASCADE")
-        
-        # ⚠️ CRITIQUE : Supprimer les planifications liées aux chantiers_planification qui causent le conflit
-        if old_planifs_count > 0:
-            cur.execute("DELETE FROM planifications WHERE chantier_id IN (SELECT id FROM chantiers_planification)")
-        
-        # Recréer les tables de PRÉPARATION avec la bonne structure
-        ensure_preparation_tables(conn)
-        
-        conn.commit()
-        
-        return {
-            "status": "🧹 Nettoyage complet terminé",
-            "tables_supprimees": [
-                "etiquettes_planification",
-                "chantiers_planification", 
-                "planifications_etiquettes"
-            ],
-            "donnees_supprimees": {
-                "etiquettes": etiquettes_count,
-                "chantiers_planification": chantiers_planif_count,
-                "planifications_etiquettes": planifs_etiquettes_count,
-                "anciennes_planifications_conflits": old_planifs_count
-            },
-            "message": "Toutes les données d'étiquettes ont été supprimées. Tables de préparation Beta-API restaurées correctement.",
-            "tables_preparation_ok": "chantiers (préparation), planifications (semaine/minutes), soldes",
-            "next_step": "Vous pouvez maintenant utiliser Beta-API sans conflit"
-        }
-        
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        return {
-            "status": "❌ Erreur lors du nettoyage",
-            "error": str(e),
-            "message": "Certaines tables n'ont peut-être pas pu être supprimées"
-        }
-    finally:
-        if conn:
-            conn.close()
-
-@app.delete("/etiquettes/data-only")
-def cleanup_etiquettes_data_only():
-    """SUPPRESSION DONNÉES SEULEMENT : Vider les tables d'étiquettes mais conserver la structure (Grille semaine)"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Compter les données avant suppression
-        try:
-            cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
-            etiquettes_count = cur.fetchone()[0]
-        except:
-            etiquettes_count = 0
-            
-        try:
-            cur.execute("SELECT COUNT(*) FROM planifications_etiquettes")
-            planifs_etiquettes_count = cur.fetchone()[0]
-        except:
-            planifs_etiquettes_count = 0
-            
-        try:
-            cur.execute("SELECT COUNT(*) FROM chantiers_planification")
-            chantiers_planif_count = cur.fetchone()[0]
-        except:
-            chantiers_planif_count = 0
-        
-        # ⚠️ ATTENTION : Supprimer les planifications conflictuelles liées aux étiquettes
-        try:
-            cur.execute("SELECT COUNT(*) FROM planifications WHERE chantier_id IN (SELECT id FROM chantiers_planification)")
-            old_planifs_count = cur.fetchone()[0]
-            if old_planifs_count > 0:
-                cur.execute("DELETE FROM planifications WHERE chantier_id IN (SELECT id FROM chantiers_planification)")
-        except:
-            old_planifs_count = 0
-        
-        # Vider les données des étiquettes (ordre important pour les contraintes)
-        cur.execute("DELETE FROM planifications_etiquettes")
-        cur.execute("DELETE FROM chantiers_planification")
-        cur.execute("DELETE FROM etiquettes_planification")
-        
-        # Reset des séquences auto-increment si les tables existent
-        try:
-            cur.execute("ALTER SEQUENCE etiquettes_planification_id_seq RESTART WITH 1")
-        except:
-            pass
-        try:
-            cur.execute("ALTER SEQUENCE chantiers_planification_id_seq RESTART WITH 1")  
-        except:
-            pass
-        try:
-            cur.execute("ALTER SEQUENCE planifications_etiquettes_id_seq RESTART WITH 1")
-        except:
-            pass
-        
-        # Recréer/vérifier les tables de PRÉPARATION pour Beta-API
-        ensure_preparation_tables(conn)
-        
-        conn.commit()
-        
-        return {
-            "status": "🗑️ Données supprimées",
-            "tables_videes": [
-                "etiquettes_planification",
-                "chantiers_planification",
-                "planifications_etiquettes"
-            ],
-            "donnees_supprimees": {
-                "etiquettes": etiquettes_count,
-                "chantiers_planification": chantiers_planif_count,
-                "planifications_etiquettes": planifs_etiquettes_count,
-                "planifications_conflictuelles": old_planifs_count
-            },
-            "message": "Toutes les données d'étiquettes ont été supprimées. Structure des tables conservée. Tables Beta-API vérifiées.",
-            "tables_preparation_ok": "chantiers, planifications (semaine/minutes), soldes",
-            "next_step": "Les tables sont prêtes. Beta-API peut maintenant fonctionner sans conflit."
-        }
-        
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        return {
-            "status": "❌ Erreur lors de la suppression",
-            "error": str(e),
-            "message": "Certaines données n'ont peut-être pas pu être supprimées"
-        }
-    finally:
-        if conn:
-            conn.close()
-
-# ========================================================================
-# 🏗️ GESTION DES CHANTIERS DE PLANIFICATION (NOUVELLE STRUCTURE - GRILLE SEMAINE)
-# ========================================================================
-# Ces endpoints gèrent la nouvelle structure pour remplacer les étiquettes :
-# - Tables : `chantiers_planification` (master) + `planifications` (détails)
-# - Usage : Alternative moderne aux étiquettes pour Grille semaine.html
-# - Avantage : Structure plus cohérente et possibilité de grouper les planifications
+# Gestion des étiquettes
 
 @app.get("/chantiers-planification")
 def get_all_chantiers_planification():
-    """Récupérer tous les chantiers de planification avec leurs planifications (Grille semaine - nouvelle structure)"""
+    """Récupérer tous les chantiers de planification avec leurs planifications"""
     conn = None
     try:
         conn = get_db_connection()
         ensure_chantiers_planification_tables(conn)
         cur = conn.cursor()
         
-        # Récupérer tous les chantiers avec leurs planifications étiquettes
+        # Récupérer tous les chantiers avec leurs planifications
         cur.execute("""
             SELECT 
                 c.id, c.type_activite, c.description, c.group_id, 
                 c.created_at, c.updated_at,
                 p.id as planif_id, p.date_jour, p.heure_debut, p.heure_fin, p.preparateurs
             FROM chantiers_planification c
-            LEFT JOIN planifications_etiquettes p ON c.id = p.chantier_id
+            LEFT JOIN planifications p ON c.id = p.chantier_id
             ORDER BY c.created_at DESC, p.date_jour ASC, p.heure_debut ASC
         """)
         
@@ -2777,7 +1630,7 @@ def get_all_chantiers_planification():
 
 @app.post("/chantiers-planification")
 def create_chantier_planification(chantier_data: Dict[str, Any]):
-    """Créer un nouveau chantier de planification avec ses planifications (Grille semaine - nouvelle structure)"""
+    """Créer un nouveau chantier de planification avec ses planifications"""
     conn = None
     try:
         conn = get_db_connection()
@@ -2820,9 +1673,9 @@ def create_chantier_planification(chantier_data: Dict[str, Any]):
             if planif['heure_debut'] >= planif['heure_fin']:
                 raise HTTPException(status_code=400, detail=f"Heure de début ({planif['heure_debut']}) doit être < heure de fin ({planif['heure_fin']})")
             
-            # Insérer la planification étiquette
+            # Insérer la planification
             cur.execute("""
-                INSERT INTO planifications_etiquettes (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
+                INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
                 VALUES (%s, %s, %s, %s, %s)
                 RETURNING id, created_at
             """, (
@@ -2870,8 +1723,7 @@ def create_chantier_planification(chantier_data: Dict[str, Any]):
         if conn:
             conn.close()
 
-@app.post("/migrate-to-chantiers")
-def migrate_etiquettes_to_chantiers():
+
     """Migrer les données des étiquettes vers la nouvelle structure chantiers"""
     conn = None
     try:
