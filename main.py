@@ -1,8 +1,93 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Optional, Any
-
+from datetime import datetime
+import json
 import os
+
+# Configuration de la base de données
+def get_db_connection():
+    """Établit une connexion à la base PostgreSQL"""
+    database_url = os.environ.get('DATABASE_URL')
+    
+    if not database_url:
+        raise Exception("DATABASE_URL non définie")
+    
+    try:
+        # Essayer psycopg3 d'abord
+        import psycopg
+        return psycopg.connect(database_url)
+    except ImportError:
+        try:
+            # Fallback sur psycopg2
+            import psycopg2
+            return psycopg2.connect(database_url)
+        except ImportError:
+            raise Exception("Aucun module psycopg disponible")
+
+def ensure_chantiers_planification_tables(conn):
+    """Créer les nouvelles tables chantiers_planification et planifications"""
+    cur = conn.cursor()
+    
+    # Table principale des chantiers
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS chantiers_planification (
+            id SERIAL PRIMARY KEY,
+            type_activite VARCHAR(50) NOT NULL,
+            description TEXT,
+            group_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Table des planifications (détails jour/heure/préparateurs)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS planifications (
+            id SERIAL PRIMARY KEY,
+            chantier_id INTEGER REFERENCES chantiers_planification(id) ON DELETE CASCADE,
+            date_jour DATE NOT NULL,
+            heure_debut INTEGER NOT NULL,
+            heure_fin INTEGER NOT NULL,
+            preparateurs TEXT[] NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Index pour optimiser les requêtes
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_chantier_id ON planifications(chantier_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_date ON planifications(date_jour)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_chantiers_group_id ON chantiers_planification(group_id)")
+    
+    conn.commit()
+
+def ensure_etiquettes_table(conn):
+    """Créer la table des étiquettes de planification (ancienne structure - Grille semaine)"""
+    cur = conn.cursor()
+    
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS etiquettes_planification (
+            id SERIAL PRIMARY KEY,
+            preparateur VARCHAR(100) NOT NULL,
+            date_jour DATE NOT NULL,
+            heure_debut INTEGER NOT NULL,
+            heure_fin INTEGER NOT NULL,
+            type_activite VARCHAR(50) NOT NULL DEFAULT 'activite',
+            description TEXT,
+            group_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Index pour optimiser les requêtes
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_etiquettes_preparateur_date 
+        ON etiquettes_planification (preparateur, date_jour)
+    """)
+    
+    conn.commit()
 
 app = FastAPI()
 app.add_middleware(
@@ -14,7 +99,136 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "API Pilotage RIP fonctionne!", "status": "✅ Version temporaire sans base de données"}
+    return {"message": "API Pilotage RIP fonctionne!", "status": "✅ Version avec séparation des systèmes Chantiers vs Étiquettes"}
+
+@app.get("/debug/system-status")
+def debug_system_status():
+    """Diagnostic complet des deux systèmes : Chantiers de préparation vs Étiquettes"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        status = {
+            "timestamp": datetime.now().isoformat(),
+            "chantiers_preparation": {},
+            "etiquettes_grille": {},
+            "conflicts": [],
+            "recommendations": []
+        }
+        
+        # ===== DIAGNOSTIC SYSTÈME CHANTIERS DE PRÉPARATION (BETA-API) =====
+        try:
+            # Table chantiers (préparation)
+            cur.execute("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'chantiers')")
+            chantiers_table_exists = cur.fetchone()[0]
+            
+            if chantiers_table_exists:
+                cur.execute("SELECT COUNT(*) FROM chantiers")
+                chantiers_count = cur.fetchone()[0]
+                
+                cur.execute("SELECT COUNT(DISTINCT status) FROM chantiers")
+                statuses_count = cur.fetchone()[0]
+            else:
+                chantiers_count = 0
+                statuses_count = 0
+                
+            status["chantiers_preparation"] = {
+                "table_exists": chantiers_table_exists,
+                "total_chantiers": chantiers_count,
+                "distinct_statuses": statuses_count,
+                "usage": "Beta-API.html - Gestion des chantiers RIP",
+                "structure": "ID, label, status, prepTime, endDate, preparateur"
+            }
+            
+        except Exception as e:
+            status["chantiers_preparation"] = {"error": str(e)}
+        
+        # ===== DIAGNOSTIC SYSTÈME ÉTIQUETTES (GRILLE SEMAINE) =====
+        etiquettes_count = 0
+        chantiers_planif_count = 0
+        planifications_count = 0
+        
+        try:
+            # Table étiquettes_planification (ancienne structure)
+            cur.execute("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'etiquettes_planification')")
+            etiquettes_table_exists = cur.fetchone()[0]
+            
+            if etiquettes_table_exists:
+                cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
+                etiquettes_count = cur.fetchone()[0]
+        except:
+            etiquettes_table_exists = False
+            
+        try:
+            # Tables chantiers_planification + planifications (nouvelle structure)
+            cur.execute("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'chantiers_planification')")
+            chantiers_planif_table_exists = cur.fetchone()[0]
+            
+            cur.execute("SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'planifications')")
+            planifications_table_exists = cur.fetchone()[0]
+            
+            if chantiers_planif_table_exists:
+                cur.execute("SELECT COUNT(*) FROM chantiers_planification")
+                chantiers_planif_count = cur.fetchone()[0]
+                
+            if planifications_table_exists:
+                cur.execute("SELECT COUNT(*) FROM planifications")
+                planifications_count = cur.fetchone()[0]
+        except:
+            chantiers_planif_table_exists = False
+            planifications_table_exists = False
+            
+        status["etiquettes_grille"] = {
+            "ancienne_structure": {
+                "table_exists": etiquettes_table_exists,
+                "total_etiquettes": etiquettes_count,
+                "usage": "Grille semaine.html - Étiquettes visuelles"
+            },
+            "nouvelle_structure": {
+                "chantiers_planification_exists": chantiers_planif_table_exists,
+                "planifications_exists": planifications_table_exists,
+                "total_chantiers": chantiers_planif_count,
+                "total_planifications": planifications_count,
+                "usage": "Grille semaine.html - Structure moderne"
+            }
+        }
+        
+        # ===== DÉTECTION DES CONFLITS =====
+        if chantiers_table_exists and (etiquettes_table_exists or chantiers_planif_table_exists):
+            status["conflicts"].append({
+                "type": "endpoints_collision",
+                "description": "Risque de collision sur l'endpoint /chantiers",
+                "impact": "Les deux systèmes utilisent des endpoints similaires"
+            })
+            
+        if etiquettes_table_exists and chantiers_planif_table_exists:
+            status["conflicts"].append({
+                "type": "double_structure",
+                "description": "Deux structures d'étiquettes coexistent",
+                "impact": "Confusion possible entre ancienne et nouvelle structure"
+            })
+            
+        # ===== RECOMMANDATIONS =====
+        if len(status["conflicts"]) == 0:
+            status["recommendations"].append("✅ Aucun conflit détecté")
+        else:
+            status["recommendations"].extend([
+                "🧹 Utilisez DELETE /etiquettes/cleanup pour supprimer toutes les tables d'étiquettes",
+                "🗑️ Ou utilisez DELETE /etiquettes/data-only pour vider les données seulement",
+                "🔄 Choisissez une seule structure : étiquettes OU chantiers_planification"
+            ])
+            
+        return status
+        
+    except Exception as e:
+        return {
+            "status": "❌ Erreur lors du diagnostic",
+            "error": str(e)
+        }
+    finally:
+        if conn:
+            conn.close()
 
 @app.get("/test-database")
 def test_database():
@@ -456,7 +670,7 @@ def migrate_soldes():
 
 @app.get("/chantiers")
 def get_chantiers():
-    """Récupérer tous les chantiers depuis PostgreSQL"""
+    """Récupérer tous les chantiers de préparation depuis PostgreSQL (Beta-API)"""
     conn = None
     try:
         from database_config import get_database_connection
@@ -751,11 +965,18 @@ def get_disponibilites():
     except Exception as e:
         return {"error": f"Erreur base de données: {str(e)}"}
 
-# ===== ENDPOINTS CRUD POUR CHANTIERS =====
+# ========================================================================
+# 🏗️ ENDPOINTS CRUD POUR CHANTIERS DE PRÉPARATION (BETA-API.html)
+# ========================================================================
+# Ces endpoints gèrent les chantiers classiques de préparation avec :
+# - Structure : ID, label, status, prepTime, endDate, preparateur, ChargeRestante
+# - Table principale : `chantiers`
+# - Tables liées : `planifications` (semaine/minutes), `soldes`
+# - Usage : Interface Beta-API.html pour la gestion des chantiers RIP
 
 @app.post("/chantiers")
 def create_chantier(chantier: Dict[str, Any]):
-    """Créer un nouveau chantier dans PostgreSQL"""
+    """Créer un nouveau chantier de préparation dans PostgreSQL (Beta-API)"""
     try:
         from database_config import get_database_connection
         
@@ -793,7 +1014,7 @@ def create_chantier(chantier: Dict[str, Any]):
 
 @app.put("/chantiers/{chantier_id}")
 def update_chantier(chantier_id: str, chantier: Dict[str, Any]):
-    """Mettre à jour un chantier existant"""
+    """Mettre à jour un chantier de préparation existant (Beta-API)"""
     try:
         from database_config import get_database_connection
         
@@ -844,7 +1065,7 @@ def update_chantier(chantier_id: str, chantier: Dict[str, Any]):
 
 @app.put("/planification")
 def update_planification(planif: Dict[str, Any]):
-    """Mettre à jour la planification d'un chantier avec préservation intelligente de l'historique"""
+    """Mettre à jour la planification d'un chantier de préparation avec préservation intelligente de l'historique (Beta-API)"""
     try:
         from database_config import get_database_connection
         from datetime import datetime, timedelta
@@ -948,7 +1169,7 @@ def update_disponibilites(dispo: Dict[str, Any]):
 
 @app.put("/sync-planning")
 def sync_complete_planning(data: Dict[str, Any]):
-    """Synchronisation complète de la planification après répartition automatique"""
+    """Synchronisation complète de la planification après répartition automatique (Beta-API)"""
     try:
         from database_config import get_database_connection
         
@@ -1510,7 +1731,7 @@ def delete_solde(chantier_id: str, semaine: str):
 
 @app.delete("/chantiers/{chantier_id}")
 def delete_chantier(chantier_id: str):
-    """Supprimer un chantier spécifique et toutes ses données associées"""
+    """Supprimer un chantier de préparation spécifique et toutes ses données associées (Beta-API)"""
     conn = None
     try:
         from database_config import get_database_connection
@@ -1565,7 +1786,7 @@ def delete_chantier(chantier_id: str):
 
 @app.delete("/chantiers")
 def delete_all_chantiers():
-    """Supprimer tous les chantiers et toutes leurs données associées"""
+    """Supprimer tous les chantiers de préparation et toutes leurs données associées (Beta-API)"""
     conn = None
     try:
         from database_config import get_database_connection
@@ -1904,6 +2125,883 @@ def delete_horaires_preparateur(preparateur_nom: str):
             "creneaux_supprimes": count_before
         }
         
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+# ========================================================================
+# 🏷️ ENDPOINTS POUR LES ÉTIQUETTES DE PLANIFICATION (GRILLE SEMAINE)
+# ========================================================================
+# Ces endpoints gèrent les étiquettes visuelles de la grille semaine avec :
+# - Structure : type_activite, description, date_jour, heure_debut/fin, preparateurs[]
+# - Tables : `etiquettes_planification` OU nouvelles tables `chantiers_planification` + `planifications`
+# - Usage : Interface Grille semaine.html pour les étiquettes visuelles
+
+# ===== ENDPOINTS POUR LES ÉTIQUETTES DE PLANIFICATION =====
+
+@app.post("/cleanup/remove-old-structure")
+def remove_old_etiquettes_structure():
+    """Supprimer l'ancienne structure etiquettes_planification"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Vérifier si l'ancienne table existe
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'etiquettes_planification'
+            )
+        """)
+        old_table_exists = cur.fetchone()[0]
+        
+        if old_table_exists:
+            # Compter les enregistrements avant suppression
+            cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
+            records_count = cur.fetchone()[0]
+            
+            # Supprimer la table
+            cur.execute("DROP TABLE IF EXISTS etiquettes_planification CASCADE")
+            conn.commit()
+            
+            return {
+                "status": "✅ Ancienne structure supprimée",
+                "table_removed": "etiquettes_planification",
+                "records_deleted": records_count,
+                "message": "Vous pouvez maintenant utiliser uniquement la nouvelle structure chantiers-planification"
+            }
+        else:
+            return {
+                "status": "ℹ️ Ancienne table déjà absente",
+                "message": "La table etiquettes_planification n'existait pas"
+            }
+            
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {
+            "status": "❌ Erreur suppression",
+            "error": str(e)
+        }
+    finally:
+        if conn:
+            conn.close()
+
+@app.post("/cleanup/fresh-start")
+def fresh_start():
+    """Nettoyage complet - Supprimer ancienne structure et créer la nouvelle"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Supprimer l'ancienne table si elle existe
+        cur.execute("DROP TABLE IF EXISTS etiquettes_planification CASCADE")
+        
+        # Supprimer les nouvelles tables si elles existent (pour un restart propre)
+        cur.execute("DROP TABLE IF EXISTS planifications CASCADE")
+        cur.execute("DROP TABLE IF EXISTS chantiers_planification CASCADE")
+        
+        # Créer la nouvelle structure
+        ensure_chantiers_planification_tables(conn)
+        
+        return {
+            "status": "✅ Redémarrage propre terminé",
+            "actions": [
+                "Ancienne table etiquettes_planification supprimée",
+                "Nouvelles tables chantiers_planification et planifications créées",
+                "Prêt pour créer des données avec POST /chantiers-planification"
+            ],
+            "next_step": "Testez avec POST /chantiers-planification"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {
+            "status": "❌ Erreur redémarrage",
+            "error": str(e)
+        }
+    finally:
+        if conn:
+            conn.close()
+
+@app.post("/chantiers/init")
+def initialize_chantiers_tables():
+    """Initialiser les nouvelles tables chantiers_planification et planifications"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_chantiers_planification_tables(conn)
+        return {
+            "status": "✅ Nouvelles tables initialisées",
+            "tables": ["chantiers_planification", "planifications"],
+            "message": "Prêt pour la migration des données"
+        }
+    except Exception as e:
+        return {
+            "status": "❌ Erreur initialisation",
+            "error": str(e)
+        }
+    finally:
+        if conn:
+            conn.close()
+
+@app.get("/debug/nouvelles-tables")
+def debug_nouvelles_tables():
+    """Vérifier la structure des nouvelles tables chantiers_planification et planifications"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        result = {}
+        
+        # Vérifier chantiers_planification
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'chantiers_planification'
+            )
+        """)
+        
+        if cur.fetchone()[0]:
+            cur.execute("""
+                SELECT column_name, data_type, is_nullable
+                FROM information_schema.columns 
+                WHERE table_name = 'chantiers_planification'
+                ORDER BY ordinal_position
+            """)
+            result["chantiers_planification"] = {
+                "exists": True,
+                "columns": [{"name": col[0], "type": col[1], "nullable": col[2]} for col in cur.fetchall()]
+            }
+        else:
+            result["chantiers_planification"] = {"exists": False}
+        
+        # Vérifier planifications
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'planifications'
+            )
+        """)
+        
+        if cur.fetchone()[0]:
+            cur.execute("""
+                SELECT column_name, data_type, is_nullable
+                FROM information_schema.columns 
+                WHERE table_name = 'planifications'
+                ORDER BY ordinal_position
+            """)
+            result["planifications"] = {
+                "exists": True,
+                "columns": [{"name": col[0], "type": col[1], "nullable": col[2]} for col in cur.fetchall()]
+            }
+        else:
+            result["planifications"] = {"exists": False}
+        
+        return {
+            "status": "✅ Vérification terminée",
+            "tables": result
+        }
+        
+    except Exception as e:
+        return {
+            "status": "❌ Erreur vérification",
+            "error": str(e)
+        }
+    finally:
+        if conn:
+            conn.close()
+
+@app.get("/debug/etiquettes-structure")
+def debug_etiquettes_structure():
+    """Vérifier la structure de la table etiquettes_planification"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Vérifier si la table existe
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'etiquettes_planification'
+            )
+        """)
+        table_exists = cur.fetchone()[0]
+        
+        if not table_exists:
+            return {
+                "status": "❌ Table etiquettes_planification n'existe pas",
+                "solution": "Utilisez POST /etiquettes/init pour la créer"
+            }
+        
+        # Récupérer la structure des colonnes
+        cur.execute("""
+            SELECT column_name, data_type, is_nullable
+            FROM information_schema.columns 
+            WHERE table_name = 'etiquettes_planification'
+            ORDER BY ordinal_position
+        """)
+        columns = cur.fetchall()
+        
+        # Récupérer quelques exemples de données
+        cur.execute("SELECT * FROM etiquettes_planification LIMIT 3")
+        sample_data = cur.fetchall()
+        
+        # Compter les enregistrements
+        cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
+        total_count = cur.fetchone()[0]
+        
+        return {
+            "status": "✅ Structure analysée",
+            "table_exists": table_exists,
+            "total_records": total_count,
+            "columns": [{"name": col[0], "type": col[1], "nullable": col[2]} for col in columns],
+            "sample_data": sample_data[:2] if sample_data else [],
+            "column_names": [col[0] for col in columns]
+        }
+        
+    except Exception as e:
+        return {
+            "status": "❌ Erreur analyse",
+            "error": str(e)
+        }
+    finally:
+        if conn:
+            conn.close()
+
+@app.post("/etiquettes/init")
+def init_etiquettes_table():
+    """Initialiser la table des étiquettes de planification (Grille semaine - ancienne structure)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_etiquettes_table(conn)
+        
+        # Vérifier que la table a été créée
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT COUNT(*) FROM information_schema.tables 
+            WHERE table_schema = 'public' AND table_name = 'etiquettes_planification'
+        """)
+        table_exists = cur.fetchone()[0] > 0
+        
+        return {
+            "status": "✅ Table étiquettes initialisée",
+            "table_exists": table_exists,
+            "message": "La table etiquettes_planification est prête à être utilisée"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'initialisation: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+@app.delete("/etiquettes/cleanup")
+def cleanup_etiquettes_tables():
+    """SUPPRESSION COMPLÈTE : Supprimer toutes les tables d'étiquettes et leurs données (Grille semaine)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Compter les données avant suppression
+        try:
+            cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
+            etiquettes_count = cur.fetchone()[0]
+        except:
+            etiquettes_count = 0
+            
+        try:
+            cur.execute("SELECT COUNT(*) FROM chantiers_planification")
+            chantiers_planif_count = cur.fetchone()[0]
+        except:
+            chantiers_planif_count = 0
+            
+        try:
+            cur.execute("SELECT COUNT(*) FROM planifications WHERE chantier_id IN (SELECT id FROM chantiers_planification)")
+            planifs_count = cur.fetchone()[0]
+        except:
+            planifs_count = 0
+        
+        # Supprimer les tables d'étiquettes (ordre important pour les contraintes)
+        cur.execute("DROP TABLE IF EXISTS planifications CASCADE")
+        cur.execute("DROP TABLE IF EXISTS chantiers_planification CASCADE") 
+        cur.execute("DROP TABLE IF EXISTS etiquettes_planification CASCADE")
+        
+        conn.commit()
+        
+        return {
+            "status": "🧹 Nettoyage complet terminé",
+            "tables_supprimees": [
+                "etiquettes_planification",
+                "chantiers_planification", 
+                "planifications"
+            ],
+            "donnees_supprimees": {
+                "etiquettes": etiquettes_count,
+                "chantiers_planification": chantiers_planif_count,
+                "planifications": planifs_count
+            },
+            "message": "Toutes les données d'étiquettes ont été supprimées. Les chantiers de préparation (Beta-API) sont conservés.",
+            "next_step": "Vous pouvez maintenant choisir quelle structure utiliser : étiquettes ou chantiers_planification"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {
+            "status": "❌ Erreur lors du nettoyage",
+            "error": str(e),
+            "message": "Certaines tables n'ont peut-être pas pu être supprimées"
+        }
+    finally:
+        if conn:
+            conn.close()
+
+@app.delete("/etiquettes/data-only")
+def cleanup_etiquettes_data_only():
+    """SUPPRESSION DONNÉES SEULEMENT : Vider les tables d'étiquettes mais conserver la structure (Grille semaine)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Compter les données avant suppression
+        try:
+            cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
+            etiquettes_count = cur.fetchone()[0]
+        except:
+            etiquettes_count = 0
+            
+        try:
+            cur.execute("SELECT COUNT(*) FROM planifications WHERE chantier_id IN (SELECT id FROM chantiers_planification)")
+            planifs_count = cur.fetchone()[0]
+        except:
+            planifs_count = 0
+            
+        try:
+            cur.execute("SELECT COUNT(*) FROM chantiers_planification")
+            chantiers_planif_count = cur.fetchone()[0]
+        except:
+            chantiers_planif_count = 0
+        
+        # Vider les données (ordre important pour les contraintes)
+        cur.execute("DELETE FROM planifications WHERE chantier_id IN (SELECT id FROM chantiers_planification)")
+        cur.execute("DELETE FROM chantiers_planification")
+        cur.execute("DELETE FROM etiquettes_planification")
+        
+        # Reset des séquences auto-increment
+        cur.execute("ALTER SEQUENCE etiquettes_planification_id_seq RESTART WITH 1")
+        cur.execute("ALTER SEQUENCE chantiers_planification_id_seq RESTART WITH 1")  
+        cur.execute("ALTER SEQUENCE planifications_id_seq RESTART WITH 1")
+        
+        conn.commit()
+        
+        return {
+            "status": "🗑️ Données supprimées",
+            "tables_videes": [
+                "etiquettes_planification",
+                "chantiers_planification",
+                "planifications"
+            ],
+            "donnees_supprimees": {
+                "etiquettes": etiquettes_count,
+                "chantiers_planification": chantiers_planif_count,
+                "planifications": planifs_count
+            },
+            "message": "Toutes les données d'étiquettes ont été supprimées. La structure des tables est conservée.",
+            "next_step": "Les tables sont prêtes à recevoir de nouvelles données"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {
+            "status": "❌ Erreur lors de la suppression",
+            "error": str(e),
+            "message": "Certaines données n'ont peut-être pas pu être supprimées"
+        }
+    finally:
+        if conn:
+            conn.close()
+
+# ========================================================================
+# 🏗️ GESTION DES CHANTIERS DE PLANIFICATION (NOUVELLE STRUCTURE - GRILLE SEMAINE)
+# ========================================================================
+# Ces endpoints gèrent la nouvelle structure pour remplacer les étiquettes :
+# - Tables : `chantiers_planification` (master) + `planifications` (détails)
+# - Usage : Alternative moderne aux étiquettes pour Grille semaine.html
+# - Avantage : Structure plus cohérente et possibilité de grouper les planifications
+
+@app.get("/chantiers-planification")
+def get_all_chantiers_planification():
+    """Récupérer tous les chantiers de planification avec leurs planifications (Grille semaine - nouvelle structure)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_chantiers_planification_tables(conn)
+        cur = conn.cursor()
+        
+        # Récupérer tous les chantiers avec leurs planifications
+        cur.execute("""
+            SELECT 
+                c.id, c.type_activite, c.description, c.group_id, 
+                c.created_at, c.updated_at,
+                p.id as planif_id, p.date_jour, p.heure_debut, p.heure_fin, p.preparateurs
+            FROM chantiers_planification c
+            LEFT JOIN planifications p ON c.id = p.chantier_id
+            ORDER BY c.created_at DESC, p.date_jour ASC, p.heure_debut ASC
+        """)
+        
+        results = cur.fetchall()
+        
+        # Grouper les résultats par chantier
+        chantiers = {}
+        for row in results:
+            chantier_id = row[0]
+            
+            if chantier_id not in chantiers:
+                chantiers[chantier_id] = {
+                    "id": row[0],
+                    "type_activite": row[1],
+                    "description": row[2],
+                    "group_id": row[3],
+                    "created_at": row[4].isoformat() if row[4] else None,
+                    "updated_at": row[5].isoformat() if row[5] else None,
+                    "planifications": []
+                }
+            
+            # Ajouter la planification si elle existe
+            if row[6]:  # planif_id
+                chantiers[chantier_id]["planifications"].append({
+                    "id": row[6],
+                    "date_jour": row[7].strftime('%Y-%m-%d'),
+                    "heure_debut": row[8],
+                    "heure_fin": row[9],
+                    "preparateurs": row[10]
+                })
+        
+        chantiers_list = list(chantiers.values())
+        
+        return {
+            "status": "✅ Chantiers récupérés",
+            "count": len(chantiers_list),
+            "chantiers": chantiers_list
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+@app.post("/chantiers-planification")
+def create_chantier_planification(chantier_data: Dict[str, Any]):
+    """Créer un nouveau chantier de planification avec ses planifications (Grille semaine - nouvelle structure)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_chantiers_planification_tables(conn)
+        cur = conn.cursor()
+        
+        # Valider les données requises
+        required_fields = ['type_activite', 'planifications']
+        for field in required_fields:
+            if field not in chantier_data:
+                raise HTTPException(status_code=400, detail=f"Champ requis manquant: {field}")
+        
+        if not chantier_data['planifications']:
+            raise HTTPException(status_code=400, detail="Au moins une planification est requise")
+        
+        # Créer le chantier principal
+        cur.execute("""
+            INSERT INTO chantiers_planification (type_activite, description, group_id)
+            VALUES (%s, %s, %s)
+            RETURNING id, created_at, updated_at
+        """, (
+            chantier_data['type_activite'],
+            chantier_data.get('description'),
+            chantier_data.get('group_id')
+        ))
+        
+        chantier_result = cur.fetchone()
+        chantier_id = chantier_result[0]
+        
+        # Créer les planifications
+        planifications_creees = []
+        for planif in chantier_data['planifications']:
+            # Valider les champs de planification
+            required_planif_fields = ['date_jour', 'heure_debut', 'heure_fin', 'preparateurs']
+            for field in required_planif_fields:
+                if field not in planif:
+                    raise HTTPException(status_code=400, detail=f"Champ planification requis manquant: {field}")
+            
+            # Valider les heures
+            if planif['heure_debut'] >= planif['heure_fin']:
+                raise HTTPException(status_code=400, detail=f"Heure de début ({planif['heure_debut']}) doit être < heure de fin ({planif['heure_fin']})")
+            
+            # Insérer la planification
+            cur.execute("""
+                INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, created_at
+            """, (
+                chantier_id,
+                planif['date_jour'],
+                planif['heure_debut'],
+                planif['heure_fin'],
+                planif['preparateurs']
+            ))
+            
+            planif_result = cur.fetchone()
+            planifications_creees.append({
+                "id": planif_result[0],
+                "date_jour": planif['date_jour'],
+                "heure_debut": planif['heure_debut'],
+                "heure_fin": planif['heure_fin'],
+                "preparateurs": planif['preparateurs'],
+                "created_at": planif_result[1].isoformat()
+            })
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Chantier créé",
+            "chantier": {
+                "id": chantier_id,
+                "type_activite": chantier_data['type_activite'],
+                "description": chantier_data.get('description'),
+                "group_id": chantier_data.get('group_id'),
+                "created_at": chantier_result[1].isoformat(),
+                "updated_at": chantier_result[2].isoformat(),
+                "planifications": planifications_creees
+            }
+        }
+        
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la création: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+@app.post("/migrate-to-chantiers")
+def migrate_etiquettes_to_chantiers():
+    """Migrer les données des étiquettes vers la nouvelle structure chantiers"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_etiquettes_table(conn)
+        ensure_chantiers_planification_tables(conn)
+        cur = conn.cursor()
+        
+        # D'abord, vérifier combien d'étiquettes nous avons
+        cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
+        total_etiquettes = cur.fetchone()[0]
+        
+        if total_etiquettes == 0:
+            return {
+                "status": "⚠️ Aucune donnée à migrer",
+                "message": "La table etiquettes_planification est vide"
+            }
+        
+        chantiers_crees = []
+        
+        # Étape 1: Migrer les étiquettes avec group_id (groupées)
+        cur.execute("""
+            SELECT DISTINCT group_id, type_activite, description
+            FROM etiquettes_planification 
+            WHERE group_id IS NOT NULL
+            ORDER BY group_id
+        """)
+        
+        groups_distincts = cur.fetchall()
+        print(f"Groups distincts trouvés: {len(groups_distincts)}")
+        
+        for group_id, type_activite, description in groups_distincts:
+            # Créer le chantier pour ce groupe
+            cur.execute("""
+                INSERT INTO chantiers_planification (type_activite, description, group_id)
+                VALUES (%s, %s, %s)
+                RETURNING id
+            """, (type_activite, description, group_id))
+            
+            chantier_id = cur.fetchone()[0]
+            
+            # Récupérer toutes les étiquettes de ce groupe
+            cur.execute("""
+                SELECT preparateur, date_jour, heure_debut, heure_fin
+                FROM etiquettes_planification 
+                WHERE group_id = %s
+                ORDER BY date_jour, heure_debut
+            """, (group_id,))
+            
+            etiquettes_du_groupe = cur.fetchall()
+            
+            # Grouper par date/heure pour regrouper les préparateurs
+            planifications_map = {}
+            for preparateur, date_jour, heure_debut, heure_fin in etiquettes_du_groupe:
+                date_str = date_jour.strftime('%Y-%m-%d')
+                key = f"{date_str}_{heure_debut}_{heure_fin}"
+                
+                if key not in planifications_map:
+                    planifications_map[key] = {
+                        'date_jour': date_str,
+                        'heure_debut': heure_debut,
+                        'heure_fin': heure_fin,
+                        'preparateurs': []
+                    }
+                planifications_map[key]['preparateurs'].append(preparateur)
+            
+            # Créer les planifications regroupées
+            planifications_creees = 0
+            for planif_data in planifications_map.values():
+                cur.execute("""
+                    INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (
+                    chantier_id,
+                    planif_data['date_jour'],
+                    planif_data['heure_debut'],
+                    planif_data['heure_fin'],
+                    planif_data['preparateurs']
+                ))
+                planifications_creees += 1
+            
+            chantiers_crees.append({
+                "chantier_id": chantier_id,
+                "type_activite": type_activite,
+                "description": description,
+                "group_id": group_id,
+                "etiquettes_source": len(etiquettes_du_groupe),
+                "planifications_creees": planifications_creees
+            })
+        
+        # Étape 2: Migrer les étiquettes individuelles (sans group_id)
+        cur.execute("""
+            SELECT id, preparateur, date_jour, heure_debut, heure_fin, type_activite, description
+            FROM etiquettes_planification 
+            WHERE group_id IS NULL
+            ORDER BY id
+        """)
+        
+        etiquettes_individuelles = cur.fetchall()
+        
+        for etiquette_id, preparateur, date_jour, heure_debut, heure_fin, type_activite, description in etiquettes_individuelles:
+            # Créer un chantier individuel
+            cur.execute("""
+                INSERT INTO chantiers_planification (type_activite, description, group_id)
+                VALUES (%s, %s, %s)
+                RETURNING id
+            """, (type_activite, description, etiquette_id))  # Utiliser l'ancien ID comme group_id
+            
+            chantier_id = cur.fetchone()[0]
+            
+            # Créer la planification unique
+            cur.execute("""
+                INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (chantier_id, date_jour, heure_debut, heure_fin, [preparateur]))
+            
+            chantiers_crees.append({
+                "chantier_id": chantier_id,
+                "type_activite": type_activite,
+                "description": description,
+                "group_id": f"individual_{etiquette_id}",
+                "etiquettes_source": 1,
+                "planifications_creees": 1
+            })
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Migration terminée",
+            "summary": {
+                "total_etiquettes_source": total_etiquettes,
+                "groups_distincts": len(groups_distincts),
+                "etiquettes_individuelles": len(etiquettes_individuelles),
+                "chantiers_crees": len(chantiers_crees),
+                "total_planifications": sum(c["planifications_creees"] for c in chantiers_crees)
+            },
+            "chantiers": chantiers_crees[:3],  # Afficher les 3 premiers
+            "message": "Migration réussie ! Testez avec GET /chantiers-planification"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        return {
+            "status": "❌ Erreur migration",
+            "error": str(e),
+            "debug": "Vérifiez les logs pour plus de détails"
+        }
+    finally:
+        if conn:
+            conn.close()
+
+@app.put("/chantiers-planification/{chantier_id}")
+def update_chantier_planification(chantier_id: int, chantier_data: Dict[str, Any]):
+    """Mettre à jour un chantier de planification"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_chantiers_planification_tables(conn)
+        cur = conn.cursor()
+        
+        # Vérifier que le chantier existe
+        cur.execute("SELECT id FROM chantiers_planification WHERE id = %s", (chantier_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Chantier non trouvé")
+        
+        # Mettre à jour les informations du chantier
+        update_fields = []
+        update_values = []
+        
+        for field in ['type_activite', 'description', 'group_id']:
+            if field in chantier_data:
+                update_fields.append(f"{field} = %s")
+                update_values.append(chantier_data[field])
+        
+        if update_fields:
+            update_fields.append("updated_at = CURRENT_TIMESTAMP")
+            update_values.append(chantier_id)
+            
+            query = f"""
+                UPDATE chantiers_planification 
+                SET {', '.join(update_fields)}
+                WHERE id = %s
+            """
+            cur.execute(query, update_values)
+        
+        # Mettre à jour les planifications si fournies
+        if 'planifications' in chantier_data:
+            # Supprimer les anciennes planifications
+            cur.execute("DELETE FROM planifications WHERE chantier_id = %s", (chantier_id,))
+            
+            # Créer les nouvelles planifications
+            for planif in chantier_data['planifications']:
+                cur.execute("""
+                    INSERT INTO planifications (chantier_id, date_jour, heure_debut, heure_fin, preparateurs)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (
+                    chantier_id,
+                    planif['date_jour'],
+                    planif['heure_debut'],
+                    planif['heure_fin'],
+                    planif['preparateurs']
+                ))
+        
+        conn.commit()
+        
+        # Récupérer le chantier mis à jour
+        cur.execute("""
+            SELECT c.id, c.type_activite, c.description, c.group_id, c.updated_at,
+                   p.id, p.date_jour, p.heure_debut, p.heure_fin, p.preparateurs
+            FROM chantiers_planification c
+            LEFT JOIN planifications p ON c.id = p.chantier_id
+            WHERE c.id = %s
+            ORDER BY p.date_jour, p.heure_debut
+        """, (chantier_id,))
+        
+        results = cur.fetchall()
+        if not results:
+            raise HTTPException(status_code=404, detail="Chantier non trouvé après mise à jour")
+        
+        # Construire la réponse
+        first_row = results[0]
+        chantier = {
+            "id": first_row[0],
+            "type_activite": first_row[1],
+            "description": first_row[2],
+            "group_id": first_row[3],
+            "updated_at": first_row[4].isoformat(),
+            "planifications": []
+        }
+        
+        for row in results:
+            if row[5]:  # Si planification existe
+                chantier["planifications"].append({
+                    "id": row[5],
+                    "date_jour": row[6].strftime('%Y-%m-%d'),
+                    "heure_debut": row[7],
+                    "heure_fin": row[8],
+                    "preparateurs": row[9]
+                })
+        
+        return {
+            "status": "✅ Chantier mis à jour",
+            "chantier": chantier
+        }
+        
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+@app.delete("/chantiers-planification/{chantier_id}")
+def delete_chantier_planification(chantier_id: int):
+    """Supprimer un chantier de planification et toutes ses planifications"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_chantiers_planification_tables(conn)
+        cur = conn.cursor()
+        
+        # Récupérer les informations avant suppression
+        cur.execute("""
+            SELECT c.type_activite, c.description, c.group_id, 
+                   COUNT(p.id) as nb_planifications
+            FROM chantiers_planification c
+            LEFT JOIN planifications p ON c.id = p.chantier_id
+            WHERE c.id = %s
+            GROUP BY c.id, c.type_activite, c.description, c.group_id
+        """, (chantier_id,))
+        
+        result = cur.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Chantier non trouvé")
+        
+        type_activite, description, group_id, nb_planifications = result
+        
+        # Supprimer le chantier (les planifications sont supprimées automatiquement via CASCADE)
+        cur.execute("DELETE FROM chantiers_planification WHERE id = %s", (chantier_id,))
+        conn.commit()
+        
+        return {
+            "status": "✅ Chantier supprimé",
+            "chantier_id": chantier_id,
+            "type_activite": type_activite,
+            "description": description,
+            "group_id": group_id,
+            "planifications_supprimees": nb_planifications
+        }
+        
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
     except Exception as e:
         if conn:
             conn.rollback()
