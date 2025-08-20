@@ -2039,7 +2039,7 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
         current_preparateurs = result[1]
         
         # Vérifier les champs requis
-        required_fields = ['preparateur', 'date_jour', 'heure_debut', 'heure_fin']
+        required_fields = ['nouveau_preparateur', 'date_jour', 'heure_debut', 'heure_fin']
         for field in required_fields:
             if field not in update_data:
                 raise HTTPException(status_code=400, detail=f"Champ requis manquant: {field}")
@@ -2050,22 +2050,36 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
         
         # Logique pour modifier le préparateur dans la liste
         preparateurs_list = current_preparateurs.split(',') if current_preparateurs else []
-        nouveau_preparateur = update_data['preparateur']
+        nouveau_preparateur = update_data['nouveau_preparateur']
+        ancien_preparateur = update_data.get('ancien_preparateur')  # Optionnel
         
-        # Si c'est un nouveau préparateur, on détermine lequel remplacer
-        # Pour simplifier, on va remplacer le premier préparateur par défaut
-        # (Dans une version plus avancée, on pourrait passer l'ancien préparateur)
-        if nouveau_preparateur not in preparateurs_list:
+        print(f"🔧 Mise à jour planification {planification_id}:")
+        print(f"   👥 Préparateurs actuels: {preparateurs_list}")
+        print(f"   👤 Ancien préparateur: {ancien_preparateur}")
+        print(f"   👤 Nouveau préparateur: {nouveau_preparateur}")
+        
+        # Si on a spécifié l'ancien préparateur, on le remplace spécifiquement
+        if ancien_preparateur and ancien_preparateur in preparateurs_list:
+            # Remplacer spécifiquement l'ancien préparateur
+            index = preparateurs_list.index(ancien_preparateur)
+            preparateurs_list[index] = nouveau_preparateur
+            print(f"🔄 Remplacement spécifique: {ancien_preparateur} → {nouveau_preparateur} (position {index})")
+        
+        elif nouveau_preparateur not in preparateurs_list:
             if preparateurs_list:
-                # Remplacer le premier préparateur
-                ancien_preparateur = preparateurs_list[0]
+                # Pas d'ancien préparateur spécifié, remplacer le premier par défaut
+                ancien_prep_defaut = preparateurs_list[0]
                 preparateurs_list[0] = nouveau_preparateur
-                print(f"🔄 Remplacement: {ancien_preparateur} → {nouveau_preparateur}")
+                print(f"🔄 Remplacement par défaut: {ancien_prep_defaut} → {nouveau_preparateur} (premier préparateur)")
             else:
                 # Ajouter si la liste est vide
                 preparateurs_list = [nouveau_preparateur]
+                print(f"➕ Ajout nouveau préparateur: {nouveau_preparateur}")
+        else:
+            print(f"ℹ️ Préparateur {nouveau_preparateur} déjà présent, pas de changement")
         
         nouveaux_preparateurs = ','.join(preparateurs_list)
+        print(f"   👥 Nouveaux préparateurs: {nouveaux_preparateurs}")
         
         # Mettre à jour la planification
         cur.execute("""
