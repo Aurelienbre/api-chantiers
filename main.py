@@ -1950,6 +1950,73 @@ def update_etiquette_horaires(etiquette_id: int, horaires_data: Dict[str, Any]):
         if conn:
             conn.close()
 
+@app.post("/etiquettes-grille/{etiquette_id}/planifications")
+def add_planification_to_etiquette(etiquette_id: int, planification_data: dict):
+    """Ajouter une nouvelle planification à une étiquette existante"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_etiquettes_grille_tables(conn)
+        cur = conn.cursor()
+        
+        # Vérifier que l'étiquette existe
+        cur.execute("SELECT id FROM etiquettes_grille WHERE id = %s", (etiquette_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Étiquette non trouvée")
+        
+        # Vérifier les données requises
+        required_fields = ['date_jour', 'heure_debut', 'heure_fin', 'preparateurs']
+        for field in required_fields:
+            if field not in planification_data:
+                raise HTTPException(status_code=422, detail=f"Champ manquant: {field}")
+        
+        # Insérer la nouvelle planification
+        cur.execute("""
+            INSERT INTO planifications_etiquettes 
+            (etiquette_id, date_jour, heure_debut, heure_fin, preparateurs)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+        """, (
+            etiquette_id,
+            planification_data['date_jour'],
+            planification_data['heure_debut'],
+            planification_data['heure_fin'],
+            planification_data['preparateurs']
+        ))
+        
+        planification_id = cur.fetchone()[0]
+        
+        # Mettre à jour le timestamp de l'étiquette
+        cur.execute("""
+            UPDATE etiquettes_grille 
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (etiquette_id,))
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Planification ajoutée",
+            "etiquette_id": etiquette_id,
+            "planification_id": planification_id,
+            "date_jour": planification_data['date_jour'],
+            "heure_debut": planification_data['heure_debut'],
+            "heure_fin": planification_data['heure_fin'],
+            "preparateurs": planification_data['preparateurs']
+        }
+        
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'ajout de la planification: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
 @app.delete("/etiquettes-grille/{etiquette_id}")
 def delete_etiquette_grille(etiquette_id: int):
     """Supprimer une étiquette de la grille semaine et toutes ses planifications"""
