@@ -1652,96 +1652,6 @@ def delete_horaires_preparateur(preparateur_nom: str):
         if conn:
             conn.close()
 
-# ===== ENDPOINTS POUR LES ÉTIQUETTES DE PLANIFICATION =====
-
-@app.delete("/cleanup-old-etiquettes")
-def cleanup_old_etiquettes():
-    """Supprimer l'ancienne structure etiquettes_planification"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Vérifier si l'ancienne table existe
-        cur.execute("""
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_name = 'etiquettes_planification'
-            )
-        """)
-        old_table_exists = cur.fetchone()[0]
-        
-        if old_table_exists:
-            # Compter les enregistrements avant suppression
-            cur.execute("SELECT COUNT(*) FROM etiquettes_planification")
-            records_count = cur.fetchone()[0]
-            
-            # Supprimer la table
-            cur.execute("DROP TABLE IF EXISTS etiquettes_planification CASCADE")
-            conn.commit()
-            
-            return {
-                "status": "✅ Ancienne structure supprimée",
-                "table_removed": "etiquettes_planification",
-                "records_deleted": records_count,
-                "message": "Vous pouvez maintenant utiliser uniquement la nouvelle structure etiquettes-grille"
-            }
-        else:
-            return {
-                "status": "ℹ️ Ancienne table déjà absente",
-                "message": "La table etiquettes_planification n'existait pas"
-            }
-            
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        return {
-            "status": "❌ Erreur suppression",
-            "error": str(e)
-        }
-    finally:
-        if conn:
-            conn.close()
-
-
-@app.post("/reset-etiquettes-grille")
-def reset_etiquettes_grille():
-    """Nettoyage complet - Supprimer ancienne structure et créer la nouvelle"""
-    conn = None
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Supprimer l'ancienne table si elle existe
-        cur.execute("DROP TABLE IF EXISTS etiquettes_planification CASCADE")
-        
-        # Supprimer les nouvelles tables si elles existent (pour un restart propre)
-        cur.execute("DROP TABLE IF EXISTS planifications_etiquettes CASCADE")
-        cur.execute("DROP TABLE IF EXISTS etiquettes_grille CASCADE")
-        
-        # Créer la nouvelle structure
-        ensure_etiquettes_grille_tables(conn)
-        
-        return {
-            "status": "✅ Redémarrage propre terminé",
-            "actions": [
-                "Ancienne table etiquettes_planification supprimée",
-                "Nouvelles tables etiquettes_grille et planifications_etiquettes créées",
-                "Prêt pour créer des données avec POST /etiquettes-grille"
-            ],
-            "next_step": "Testez avec POST /etiquettes-grille"
-        }
-        
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        return {
-            "status": "❌ Erreur redémarrage",
-            "error": str(e)
-        }
-    finally:
-        if conn:
-            conn.close()
 
 
 # Gestion des étiquettes de planification
@@ -1970,6 +1880,72 @@ def update_etiquette_grille(etiquette_id: int, etiquette_data: Dict[str, Any]):
         if conn:
             conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
+@app.put("/etiquettes-grille/{etiquette_id}/horaires")
+def update_etiquette_horaires(etiquette_id: int, horaires_data: Dict[str, Any]):
+    """Mettre à jour seulement les heures d'une planification d'étiquette (sans toucher aux préparateurs)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_etiquettes_grille_tables(conn)
+        cur = conn.cursor()
+        
+        # Vérifier que l'étiquette existe
+        cur.execute("SELECT id FROM etiquettes_grille WHERE id = %s", (etiquette_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Étiquette non trouvée")
+        
+        # Vérifier les champs requis
+        required_fields = ['planification_id', 'heure_debut', 'heure_fin']
+        for field in required_fields:
+            if field not in horaires_data:
+                raise HTTPException(status_code=400, detail=f"Champ requis manquant: {field}")
+        
+        # Valider les heures
+        if horaires_data['heure_debut'] >= horaires_data['heure_fin']:
+            raise HTTPException(status_code=400, detail=f"Heure de début ({horaires_data['heure_debut']}) doit être < heure de fin ({horaires_data['heure_fin']})")
+        
+        # Mettre à jour seulement les heures de la planification spécifique
+        cur.execute("""
+            UPDATE planifications_etiquettes 
+            SET heure_debut = %s, heure_fin = %s
+            WHERE id = %s AND etiquette_id = %s
+        """, (
+            horaires_data['heure_debut'],
+            horaires_data['heure_fin'],
+            horaires_data['planification_id'],
+            etiquette_id
+        ))
+        
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Planification non trouvée pour cette étiquette")
+        
+        # Mettre à jour le timestamp de l'étiquette
+        cur.execute("""
+            UPDATE etiquettes_grille 
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (etiquette_id,))
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Horaires mis à jour",
+            "etiquette_id": etiquette_id,
+            "planification_id": horaires_data['planification_id']
+        }
+        
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour des horaires: {str(e)}")
     finally:
         if conn:
             conn.close()
