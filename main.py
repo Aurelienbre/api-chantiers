@@ -2054,29 +2054,33 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
         ancien_preparateur = update_data.get('ancien_preparateur')  # Optionnel
         
         print(f"🔧 Mise à jour planification {planification_id}:")
-        print(f"   👥 Préparateurs actuels: {preparateurs_list}")
-        print(f"   👤 Ancien préparateur: {ancien_preparateur}")
-        print(f"   👤 Nouveau préparateur: {nouveau_preparateur}")
+        print(f"   � Données reçues: {update_data}")
+        print(f"   �👥 Préparateurs actuels: {preparateurs_list}")
+        print(f"   👤 Ancien préparateur: '{ancien_preparateur}' (type: {type(ancien_preparateur)})")
+        print(f"   👤 Nouveau préparateur: '{nouveau_preparateur}' (type: {type(nouveau_preparateur)})")
+        print(f"   🔍 Ancien préparateur in list: {ancien_preparateur in preparateurs_list if ancien_preparateur else 'N/A'}")
         
         # Si on a spécifié l'ancien préparateur, on le remplace spécifiquement
-        if ancien_preparateur and ancien_preparateur in preparateurs_list:
+        if ancien_preparateur and ancien_preparateur.strip() and ancien_preparateur.strip() in preparateurs_list:
             # Remplacer spécifiquement l'ancien préparateur
-            index = preparateurs_list.index(ancien_preparateur)
-            preparateurs_list[index] = nouveau_preparateur
-            print(f"🔄 Remplacement spécifique: {ancien_preparateur} → {nouveau_preparateur} (position {index})")
+            ancien_clean = ancien_preparateur.strip()
+            index = preparateurs_list.index(ancien_clean)
+            preparateurs_list[index] = nouveau_preparateur.strip()
+            print(f"🔄 Remplacement spécifique: '{ancien_clean}' → '{nouveau_preparateur.strip()}' (position {index})")
         
         elif nouveau_preparateur not in preparateurs_list:
             if preparateurs_list:
                 # Pas d'ancien préparateur spécifié, remplacer le premier par défaut
                 ancien_prep_defaut = preparateurs_list[0]
-                preparateurs_list[0] = nouveau_preparateur
-                print(f"🔄 Remplacement par défaut: {ancien_prep_defaut} → {nouveau_preparateur} (premier préparateur)")
+                preparateurs_list[0] = nouveau_preparateur.strip()
+                print(f"🔄 Remplacement par défaut: '{ancien_prep_defaut}' → '{nouveau_preparateur.strip()}' (premier préparateur)")
+                print(f"   ⚠️ Raison: ancien_preparateur='{ancien_preparateur}' non trouvé dans {preparateurs_list}")
             else:
                 # Ajouter si la liste est vide
-                preparateurs_list = [nouveau_preparateur]
-                print(f"➕ Ajout nouveau préparateur: {nouveau_preparateur}")
+                preparateurs_list = [nouveau_preparateur.strip()]
+                print(f"➕ Ajout nouveau préparateur: '{nouveau_preparateur.strip()}'")
         else:
-            print(f"ℹ️ Préparateur {nouveau_preparateur} déjà présent, pas de changement")
+            print(f"ℹ️ Préparateur '{nouveau_preparateur}' déjà présent, pas de changement")
         
         nouveaux_preparateurs = ','.join(preparateurs_list)
         print(f"   👥 Nouveaux préparateurs: {nouveaux_preparateurs}")
