@@ -2017,6 +2017,108 @@ def add_planification_to_etiquette(etiquette_id: int, planification_data: dict):
         if conn:
             conn.close()
 
+@app.put("/etiquettes-grille/{etiquette_id}/planifications/{planification_id}")
+def update_planification_specifique(etiquette_id: int, planification_id: int, update_data: Dict[str, Any]):
+    """Mettre à jour une planification spécifique (date, heures, et un seul préparateur)"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_etiquettes_grille_tables(conn)
+        cur = conn.cursor()
+        
+        # Vérifier que l'étiquette et la planification existent
+        cur.execute("""
+            SELECT id, preparateurs FROM planifications_etiquettes 
+            WHERE id = %s AND etiquette_id = %s
+        """, (planification_id, etiquette_id))
+        
+        result = cur.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Planification non trouvée pour cette étiquette")
+        
+        current_preparateurs = result[1]
+        
+        # Vérifier les champs requis
+        required_fields = ['preparateur', 'date_jour', 'heure_debut', 'heure_fin']
+        for field in required_fields:
+            if field not in update_data:
+                raise HTTPException(status_code=400, detail=f"Champ requis manquant: {field}")
+        
+        # Valider les heures
+        if update_data['heure_debut'] >= update_data['heure_fin']:
+            raise HTTPException(status_code=400, detail=f"Heure de début ({update_data['heure_debut']}) doit être < heure de fin ({update_data['heure_fin']})")
+        
+        # Logique pour modifier le préparateur dans la liste
+        preparateurs_list = current_preparateurs.split(',') if current_preparateurs else []
+        nouveau_preparateur = update_data['preparateur']
+        
+        # Si c'est un nouveau préparateur, on détermine lequel remplacer
+        # Pour simplifier, on va remplacer le premier préparateur par défaut
+        # (Dans une version plus avancée, on pourrait passer l'ancien préparateur)
+        if nouveau_preparateur not in preparateurs_list:
+            if preparateurs_list:
+                # Remplacer le premier préparateur
+                ancien_preparateur = preparateurs_list[0]
+                preparateurs_list[0] = nouveau_preparateur
+                print(f"🔄 Remplacement: {ancien_preparateur} → {nouveau_preparateur}")
+            else:
+                # Ajouter si la liste est vide
+                preparateurs_list = [nouveau_preparateur]
+        
+        nouveaux_preparateurs = ','.join(preparateurs_list)
+        
+        # Mettre à jour la planification
+        cur.execute("""
+            UPDATE planifications_etiquettes 
+            SET date_jour = %s, 
+                heure_debut = %s, 
+                heure_fin = %s, 
+                preparateurs = %s
+            WHERE id = %s AND etiquette_id = %s
+        """, (
+            update_data['date_jour'],
+            update_data['heure_debut'],
+            update_data['heure_fin'],
+            nouveaux_preparateurs,
+            planification_id,
+            etiquette_id
+        ))
+        
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Aucune planification mise à jour")
+        
+        # Mettre à jour le timestamp de l'étiquette
+        cur.execute("""
+            UPDATE etiquettes_grille 
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (etiquette_id,))
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Planification spécifique mise à jour",
+            "etiquette_id": etiquette_id,
+            "planification_id": planification_id,
+            "date_jour": update_data['date_jour'],
+            "heure_debut": update_data['heure_debut'],
+            "heure_fin": update_data['heure_fin'],
+            "ancien_preparateurs": current_preparateurs,
+            "nouveaux_preparateurs": nouveaux_preparateurs
+        }
+        
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour de la planification: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
 @app.delete("/etiquettes-grille/{etiquette_id}")
 def delete_etiquette_grille(etiquette_id: int):
     """Supprimer une étiquette de la grille semaine et toutes ses planifications"""
