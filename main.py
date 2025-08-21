@@ -2054,8 +2054,8 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
         ancien_preparateur = update_data.get('ancien_preparateur', '').strip()  # Optionnel
         
         print(f"🔧 Mise à jour planification {planification_id}:")
-        print(f"   � Données reçues: {update_data}")
-        print(f"   �👥 Préparateurs actuels: {preparateurs_list}")
+        print(f"   📋 Données reçues: {update_data}")
+        print(f"   👥 Préparateurs actuels: {preparateurs_list}")
         print(f"   👤 Ancien préparateur: '{ancien_preparateur}' (type: {type(ancien_preparateur)})")
         print(f"   👤 Nouveau préparateur: '{nouveau_preparateur}' (type: {type(nouveau_preparateur)})")
         print(f"   🔍 Ancien préparateur in list: {ancien_preparateur in preparateurs_list if ancien_preparateur else 'N/A'}")
@@ -2081,8 +2081,28 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
         else:
             print(f"ℹ️ Préparateur '{nouveau_preparateur}' déjà présent, pas de changement")
         
+        # 🚨 NOUVELLE LOGIQUE : Détecter et supprimer les doublons
+        preparateurs_avant_dedoublonnage = preparateurs_list.copy()
+        
+        # Créer une liste sans doublons en préservant l'ordre
+        preparateurs_dedoublonnes = []
+        for prep in preparateurs_list:
+            if prep and prep not in preparateurs_dedoublonnes:  # Ignorer les chaînes vides aussi
+                preparateurs_dedoublonnes.append(prep)
+        
+        # Vérifier s'il y avait des doublons
+        doublons_detectes = len(preparateurs_avant_dedoublonnage) != len(preparateurs_dedoublonnes)
+        doublons_supprimes = len(preparateurs_avant_dedoublonnage) - len(preparateurs_dedoublonnes)
+        
+        if doublons_detectes:
+            print(f"🔍 DOUBLONS DETECTÉS:")
+            print(f"   📋 Avant dédoublonnage: {preparateurs_avant_dedoublonnage} ({len(preparateurs_avant_dedoublonnage)} éléments)")
+            print(f"   ✅ Après dédoublonnage: {preparateurs_dedoublonnes} ({len(preparateurs_dedoublonnes)} éléments)")
+            print(f"   🗑️ {doublons_supprimes} doublon(s) supprimé(s)")
+        
+        preparateurs_list = preparateurs_dedoublonnes
         nouveaux_preparateurs = ','.join(preparateurs_list)
-        print(f"   👥 Nouveaux préparateurs: {nouveaux_preparateurs}")
+        print(f"   👥 Nouveaux préparateurs finaux: {nouveaux_preparateurs}")
         
         # Mettre à jour la planification
         cur.execute("""
@@ -2121,7 +2141,10 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
             "heure_debut": update_data['heure_debut'],
             "heure_fin": update_data['heure_fin'],
             "ancien_preparateurs": current_preparateurs,
-            "nouveaux_preparateurs": nouveaux_preparateurs
+            "nouveaux_preparateurs": nouveaux_preparateurs,
+            "doublons_detectes": doublons_detectes,
+            "doublons_supprimes": doublons_supprimes if doublons_detectes else 0,
+            "preparateurs_avant_dedoublonnage": preparateurs_avant_dedoublonnage if doublons_detectes else None
         }
         
     except HTTPException:
