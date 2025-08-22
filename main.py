@@ -2209,6 +2209,92 @@ def delete_etiquette_grille(etiquette_id: int):
         if conn:
             conn.close()
 
+@app.delete("/etiquettes-grille/{etiquette_id}/planifications/{planification_id}")
+def delete_planification_etiquette(etiquette_id: int, planification_id: int):
+    """Supprimer une planification spécifique d'une étiquette sans supprimer l'étiquette entière"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_etiquettes_grille_tables(conn)
+        cur = conn.cursor()
+        
+        # Vérifier que l'étiquette et la planification existent
+        cur.execute("""
+            SELECT e.type_activite, e.description, e.group_id,
+                   p.date_jour, p.heure_debut, p.heure_fin, p.preparateurs
+            FROM etiquettes_grille e
+            INNER JOIN planifications_etiquettes p ON e.id = p.etiquette_id
+            WHERE e.id = %s AND p.id = %s
+        """, (etiquette_id, planification_id))
+        
+        result = cur.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Étiquette ou planification non trouvée")
+        
+        type_activite, description, group_id, date_jour, heure_debut, heure_fin, preparateurs = result
+        
+        # Vérifier combien de planifications restent pour cette étiquette
+        cur.execute("""
+            SELECT COUNT(*) FROM planifications_etiquettes 
+            WHERE etiquette_id = %s
+        """, (etiquette_id,))
+        
+        nb_planifications_total = cur.fetchone()[0]
+        
+        # Si c'est la dernière planification, on peut soit interdire la suppression
+        # soit supprimer toute l'étiquette (à décider selon vos besoins)
+        if nb_planifications_total == 1:
+            raise HTTPException(
+                status_code=400, 
+                detail="Impossible de supprimer la dernière planification d'une étiquette. Supprimez l'étiquette entière si nécessaire."
+            )
+        
+        # Supprimer la planification spécifique
+        cur.execute("""
+            DELETE FROM planifications_etiquettes 
+            WHERE id = %s AND etiquette_id = %s
+        """, (planification_id, etiquette_id))
+        
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Planification non trouvée")
+        
+        # Mettre à jour le timestamp de l'étiquette
+        cur.execute("""
+            UPDATE etiquettes_grille 
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (etiquette_id,))
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Planification supprimée",
+            "etiquette_id": etiquette_id,
+            "planification_id": planification_id,
+            "type_activite": type_activite,
+            "description": description,
+            "group_id": group_id,
+            "planification_supprimee": {
+                "date_jour": str(date_jour),
+                "heure_debut": str(heure_debut),
+                "heure_fin": str(heure_fin),
+                "preparateurs": preparateurs
+            },
+            "planifications_restantes": nb_planifications_total - 1
+        }
+        
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression de la planification: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
 
 # ========================================================================
 # ENDPOINTS DE NETTOYAGE COMPLET DE LA BASE DE DONNÉES
