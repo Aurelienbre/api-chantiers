@@ -2295,6 +2295,106 @@ def delete_planification_etiquette(etiquette_id: int, planification_id: int):
         if conn:
             conn.close()
 
+@app.delete("/etiquettes-grille/{etiquette_id}/planifications/{planification_id}/preparateurs/{preparateur_nom}")
+def remove_preparateur_from_planification(etiquette_id: int, planification_id: int, preparateur_nom: str):
+    """Retirer un préparateur spécifique d'une planification sans affecter les autres préparateurs"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_etiquettes_grille_tables(conn)
+        cur = conn.cursor()
+        
+        # Vérifier que l'étiquette et la planification existent
+        cur.execute("""
+            SELECT e.type_activite, e.description, e.group_id,
+                   p.date_jour, p.heure_debut, p.heure_fin, p.preparateurs
+            FROM etiquettes_grille e
+            INNER JOIN planifications_etiquettes p ON e.id = p.etiquette_id
+            WHERE e.id = %s AND p.id = %s
+        """, (etiquette_id, planification_id))
+        
+        result = cur.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Étiquette ou planification non trouvée")
+        
+        type_activite, description, group_id, date_jour, heure_debut, heure_fin, preparateurs_actuels = result
+        
+        # Analyser la liste des préparateurs actuels
+        preparateurs_list = [p.strip() for p in preparateurs_actuels.split(',') if p.strip()]
+        preparateur_nom_clean = preparateur_nom.strip()
+        
+        # Vérifier que le préparateur est dans la liste
+        if preparateur_nom_clean not in preparateurs_list:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Le préparateur '{preparateur_nom_clean}' n'est pas assigné à cette planification"
+            )
+        
+        # Si c'est le seul préparateur, ne rien faire
+        if len(preparateurs_list) == 1:
+            return {
+                "status": "ℹ️ Aucune action effectuée",
+                "message": f"Le préparateur '{preparateur_nom_clean}' est le seul assigné à cette planification",
+                "etiquette_id": etiquette_id,
+                "planification_id": planification_id,
+                "preparateurs_avant": preparateurs_actuels,
+                "preparateurs_apres": preparateurs_actuels,
+                "preparateurs_restants": 1
+            }
+        
+        # Retirer le préparateur de la liste
+        preparateurs_list.remove(preparateur_nom_clean)
+        nouveaux_preparateurs = ','.join(preparateurs_list)
+        
+        # Mettre à jour la planification
+        cur.execute("""
+            UPDATE planifications_etiquettes 
+            SET preparateurs = %s
+            WHERE id = %s AND etiquette_id = %s
+        """, (nouveaux_preparateurs, planification_id, etiquette_id))
+        
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Impossible de mettre à jour la planification")
+        
+        # Mettre à jour le timestamp de l'étiquette
+        cur.execute("""
+            UPDATE etiquettes_grille 
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (etiquette_id,))
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Préparateur retiré de la planification",
+            "etiquette_id": etiquette_id,
+            "planification_id": planification_id,
+            "type_activite": type_activite,
+            "description": description,
+            "group_id": group_id,
+            "preparateur_retire": preparateur_nom_clean,
+            "planification_info": {
+                "date_jour": str(date_jour),
+                "heure_debut": str(heure_debut),
+                "heure_fin": str(heure_fin)
+            },
+            "preparateurs_avant": preparateurs_actuels,
+            "preparateurs_apres": nouveaux_preparateurs,
+            "preparateurs_restants": len(preparateurs_list)
+        }
+        
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors du retrait du préparateur: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
 
 # ========================================================================
 # ENDPOINTS DE NETTOYAGE COMPLET DE LA BASE DE DONNÉES
