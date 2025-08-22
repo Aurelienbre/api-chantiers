@@ -2159,6 +2159,100 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
         if conn:
             conn.close()
 
+@app.post("/etiquettes-grille/{etiquette_id}/planifications/{planification_id}/preparateurs")
+def add_preparateur_to_planification(etiquette_id: int, planification_id: int, preparateur_data: Dict[str, Any]):
+    """Ajouter un préparateur à une planification existante"""
+    conn = None
+    try:
+        conn = get_db_connection()
+        ensure_etiquettes_grille_tables(conn)
+        cur = conn.cursor()
+        
+        # Vérifier que l'étiquette et la planification existent
+        cur.execute("""
+            SELECT p.id, p.preparateurs, e.type_activite, e.description
+            FROM planifications_etiquettes p
+            INNER JOIN etiquettes_grille e ON p.etiquette_id = e.id
+            WHERE p.id = %s AND p.etiquette_id = %s
+        """, (planification_id, etiquette_id))
+        
+        result = cur.fetchone()
+        if not result:
+            raise HTTPException(status_code=404, detail="Planification non trouvée pour cette étiquette")
+        
+        planif_id, preparateurs_actuels, type_activite, description = result
+        
+        # Vérifier les champs requis
+        if 'preparateur_nom' not in preparateur_data:
+            raise HTTPException(status_code=400, detail="Champ requis manquant: preparateur_nom")
+        
+        nouveau_preparateur = preparateur_data['preparateur_nom'].strip()
+        if not nouveau_preparateur:
+            raise HTTPException(status_code=400, detail="Le nom du préparateur ne peut pas être vide")
+        
+        # Analyser la liste des préparateurs actuels
+        preparateurs_list = [p.strip() for p in preparateurs_actuels.split(',') if p.strip()] if preparateurs_actuels else []
+        
+        print(f"🔧 Ajout préparateur à la planification {planification_id}:")
+        print(f"   👤 Nouveau préparateur: '{nouveau_preparateur}'")
+        print(f"   👥 Préparateurs actuels: {preparateurs_list}")
+        
+        # Vérifier si le préparateur est déjà dans la liste
+        if nouveau_preparateur in preparateurs_list:
+            raise HTTPException(
+                status_code=409, 
+                detail=f"Le préparateur '{nouveau_preparateur}' est déjà assigné à cette planification"
+            )
+        
+        # Ajouter le nouveau préparateur à la liste
+        preparateurs_list.append(nouveau_preparateur)
+        nouveaux_preparateurs = ','.join(preparateurs_list)
+        
+        print(f"   👥 Nouveaux préparateurs: {nouveaux_preparateurs}")
+        
+        # Mettre à jour la planification avec le nouveau préparateur
+        cur.execute("""
+            UPDATE planifications_etiquettes 
+            SET preparateurs = %s
+            WHERE id = %s AND etiquette_id = %s
+        """, (nouveaux_preparateurs, planification_id, etiquette_id))
+        
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Aucune planification mise à jour")
+        
+        # Mettre à jour le timestamp de l'étiquette
+        cur.execute("""
+            UPDATE etiquettes_grille 
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (etiquette_id,))
+        
+        conn.commit()
+        
+        return {
+            "status": "✅ Préparateur ajouté à la planification",
+            "etiquette_id": etiquette_id,
+            "planification_id": planification_id,
+            "type_activite": type_activite,
+            "description": description,
+            "preparateur_ajoute": nouveau_preparateur,
+            "anciens_preparateurs": preparateurs_actuels if preparateurs_actuels else "(aucun)",
+            "nouveaux_preparateurs": nouveaux_preparateurs,
+            "total_preparateurs": len(preparateurs_list)
+        }
+        
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de l'ajout du préparateur: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+
 @app.delete("/etiquettes-grille/{etiquette_id}")
 def delete_etiquette_grille(etiquette_id: int):
     """Supprimer une étiquette de la grille semaine et toutes ses planifications"""
