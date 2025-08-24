@@ -1,10 +1,6 @@
-# Configuration pour PostgreSQL sur Render avec psycopg3 et pool de connexions
+# Configuration pour PostgreSQL sur Render avec psycopg3
 import os
 from urllib.parse import urlparse
-from contextlib import contextmanager
-
-# Pool de connexions global (optionnel, mais recommandé pour éviter les verrous)
-_connection_pool = None
 
 def get_database_connection():
     """Retourne une connexion PostgreSQL avec psycopg3"""
@@ -17,42 +13,13 @@ def get_database_connection():
     import psycopg
     
     url = urlparse(database_url)
-    # Configuration basique sans timeout agressif qui cause des problèmes
-    conn = psycopg.connect(
+    return psycopg.connect(
         dbname=url.path[1:],
         user=url.username,
         password=url.password,
         host=url.hostname,
-        port=url.port,
-        connect_timeout=10
+        port=url.port
     )
-    
-    return conn
-
-@contextmanager
-def get_db_transaction():
-    """Context manager pour les transactions avec gestion automatique des erreurs"""
-    conn = None
-    try:
-        conn = get_database_connection()
-        conn.autocommit = False
-        yield conn
-        conn.commit()
-    except Exception as e:
-        if conn:
-            try:
-                conn.rollback()
-            except:
-                # En cas d'erreur lors du rollback, fermer la connexion
-                pass
-        raise e
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except:
-                # Ignorer les erreurs de fermeture
-                pass
 
 def execute_query(query, params=None, fetch=False):
     """Exécute une requête avec gestion des différences PostgreSQL/SQLite"""
