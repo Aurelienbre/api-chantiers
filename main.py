@@ -240,14 +240,19 @@ def get_preparateurs():
         
         cur.execute("SELECT nom, nni FROM preparateurs ORDER BY nom")
         rows = cur.fetchall()
-        conn.close()
         
         # Convertir en dictionnaire nom -> nni
         preparateurs = {row[0]: row[1] for row in rows}
         
+        conn.close()
         return preparateurs
         
     except Exception as e:
+        try:
+            if 'conn' in locals():
+                conn.close()
+        except:
+            pass
         return {"error": f"Erreur base de données: {str(e)}"}
 
 @app.post("/preparateurs")
@@ -389,7 +394,6 @@ def delete_preparateur(nom: str):
 @app.get("/chantiers")
 def get_chantiers():
     """Récupérer tous les chantiers depuis PostgreSQL"""
-    conn = None
     try:
         from database_config import get_database_connection
         
@@ -485,17 +489,17 @@ def get_chantiers():
                 if row[10] and row[11]:  # semaine et minutes de solde
                     chantiers[chantier_id]["soldes"][row[10]] = row[11]
         
+        conn.close()
         return chantiers
         
     except Exception as e:
         print(f"🚨 Erreur GET /chantiers: {str(e)}")
-        return {"error": f"Erreur base de données: {str(e)}"}
-    finally:
-        if conn:
-            try:
+        try:
+            if conn:
                 conn.close()
-            except:
-                pass
+        except:
+            pass
+        return {"error": f"Erreur base de données: {str(e)}"}
 
 @app.post("/chantiers")
 def create_chantier(chantier: Dict[str, Any]):
@@ -775,7 +779,6 @@ def get_disponibilites():
         """)
         
         rows = cur.fetchall()
-        conn.close()
         
         # Regrouper par préparateur
         disponibilites = {}
@@ -789,9 +792,15 @@ def get_disponibilites():
                 "updatedAt": row[3]
             }
         
+        conn.close()
         return {"data": disponibilites}
         
     except Exception as e:
+        try:
+            if 'conn' in locals():
+                conn.close()
+        except:
+            pass
         return {"error": f"Erreur base de données: {str(e)}"}
 
 
