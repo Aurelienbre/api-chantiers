@@ -17,23 +17,15 @@ def get_database_connection():
     import psycopg
     
     url = urlparse(database_url)
-    # Configuration optimisée pour réduire les verrous
+    # Configuration basique sans timeout agressif qui cause des problèmes
     conn = psycopg.connect(
         dbname=url.path[1:],
         user=url.username,
         password=url.password,
         host=url.hostname,
         port=url.port,
-        # Paramètres optimisés pour réduire les temps de verrous
-        connect_timeout=10,
-        options="-c statement_timeout=30000"  # Timeout de 30 secondes
+        connect_timeout=10
     )
-    
-    # Configuration de la connexion pour éviter les deadlocks
-    cur = conn.cursor()
-    cur.execute("SET lock_timeout = '10s'")  # Timeout pour les verrous
-    cur.execute("SET idle_in_transaction_session_timeout = '60s'")  # Éviter les transactions longues
-    conn.commit()
     
     return conn
 
@@ -48,11 +40,19 @@ def get_db_transaction():
         conn.commit()
     except Exception as e:
         if conn:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except:
+                # En cas d'erreur lors du rollback, fermer la connexion
+                pass
         raise e
     finally:
         if conn:
-            conn.close()
+            try:
+                conn.close()
+            except:
+                # Ignorer les erreurs de fermeture
+                pass
 
 def execute_query(query, params=None, fetch=False):
     """Exécute une requête avec gestion des différences PostgreSQL/SQLite"""
