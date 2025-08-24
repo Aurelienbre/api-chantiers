@@ -196,26 +196,30 @@ class DisponibiliteCalculator:
         Convertit un ID de semaine en dates de début et fin
         
         Args:
-            semaine_id: Format "2025-W34" ou "2025-W34-1"
+            semaine_id: Format "2025-W34" (format ISO 8601 standard)
             
         Returns:
             Tuple[str, str]: (date_debut, date_fin) au format YYYY-MM-DD
         """
         try:
-            # Parser le format "2025-W34" ou "2025-W34-1"
-            if '-1' in semaine_id:
-                # Format avec suffixe -1
-                year_week_part = semaine_id.replace('-1', '')
-            else:
-                year_week_part = semaine_id
-                
-            year_str, week_str = year_week_part.split('-W')
+            # Parser le format "2025-W34" (format ISO 8601 standard)
+            year_str, week_str = semaine_id.split('-W')
             year = int(year_str)
             week = int(week_str)
             
-            # Calculer le premier jour de la semaine (lundi)
+            # Calculer le premier jour de la semaine (lundi) selon ISO 8601
             first_day_of_year = datetime(year, 1, 1)
-            first_monday = first_day_of_year + timedelta(days=(7 - first_day_of_year.weekday()))
+            
+            # Trouver le premier lundi de l'année
+            days_to_monday = (7 - first_day_of_year.weekday()) % 7
+            if days_to_monday == 0 and first_day_of_year.weekday() != 0:
+                days_to_monday = 7
+            first_monday = first_day_of_year + timedelta(days=days_to_monday)
+            
+            # Si le premier janvier est un lundi, mardi, mercredi ou jeudi,
+            # alors la première semaine commence le lundi précédent (ou le même jour)
+            if first_day_of_year.weekday() < 4:  # Lundi=0, Jeudi=3
+                first_monday = first_day_of_year - timedelta(days=first_day_of_year.weekday())
             
             # Calculer le début de la semaine demandée
             week_start = first_monday + timedelta(weeks=week - 1)
