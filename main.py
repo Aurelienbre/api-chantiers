@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Dict, Optional, Any
 import os
 import json
+from disponibilite_calculator import DisponibiliteCalculator
 
 # Configuration de la base de données
 def get_db_connection():
@@ -205,6 +206,70 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Fonction utilitaire pour recalculer les disponibilités
+def recalculate_disponibilites(conn, preparateur_nom=None, semaine_id=None):
+    """
+    Fonction utilitaire pour recalculer les disponibilités après modifications
+    
+    Args:
+        conn: Connexion à la base de données
+        preparateur_nom: Nom du préparateur spécifique (optionnel)
+        semaine_id: ID de semaine spécifique (optionnel)
+    """
+    try:
+        calculator = DisponibiliteCalculator(conn)
+        
+        # Si on a un préparateur et une semaine spécifiques
+        if preparateur_nom and semaine_id:
+            calculator.update_preparateur_disponibilite(preparateur_nom, semaine_id)
+            return f"Disponibilité recalculée pour {preparateur_nom} - semaine {semaine_id}"
+        
+        # Si on a seulement une semaine, mettre à jour tous les préparateurs de cette semaine
+        elif semaine_id:
+            results = calculator.update_all_disponibilites_semaine(semaine_id)
+            successful_updates = sum(1 for success in results.values() if success)
+            return f"Disponibilités recalculées pour {successful_updates}/{len(results)} préparateurs - semaine {semaine_id}"
+        
+        # Si on a seulement un préparateur, calculer toutes ses semaines existantes
+        elif preparateur_nom:
+            cur = conn.cursor()
+            # Récupérer toutes les semaines existantes pour ce préparateur
+            cur.execute("SELECT DISTINCT semaine FROM disponibilites WHERE preparateur_nom = %s", (preparateur_nom,))
+            semaines = [row[0] for row in cur.fetchall()]
+            
+            successful_updates = 0
+            for semaine in semaines:
+                if calculator.update_preparateur_disponibilite(preparateur_nom, semaine):
+                    successful_updates += 1
+            
+            return f"Disponibilités recalculées pour {preparateur_nom}: {successful_updates}/{len(semaines)} semaines"
+        
+        # Sinon, ne rien faire pour éviter des calculs trop lourds
+        else:
+            return "Aucun recalcul effectué - paramètres insuffisants"
+            
+    except Exception as e:
+        print(f"Erreur lors du recalcul des disponibilités: {str(e)}")
+        return f"Erreur: {str(e)}"
+
+def extract_semaine_from_date(date_str):
+    """
+    Extrait l'ID de semaine depuis une date au format YYYY-MM-DD
+    
+    Args:
+        date_str: Date au format "YYYY-MM-DD"
+        
+    Returns:
+        str: Semaine au format "YYYY-WXX"
+    """
+    try:
+        from datetime import datetime
+        date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+        year, week, _ = date_obj.isocalendar()
+        return f"{year}-W{week:02d}"
+    except:
+        return None
 
 
 # ========================================================================
@@ -780,6 +845,73 @@ def get_disponibilites():
         
     except Exception as e:
         return {"error": f"Erreur base de données: {str(e)}"}
+
+@app.post("/disponibilites/recalculate")
+def recalculate_all_disponibilites_endpoint(filters: Optional[Dict[str, Any]] = None):
+    """Endpoint pour recalculer manuellement les disponibilités"""
+    conn = None
+    try:
+        from database_config import get_database_connection
+        
+        conn = get_database_connection()
+        calculator = DisponibiliteCalculator(conn)
+        
+        # Paramètres optionnels
+        preparateur_nom = filters.get('preparateur_nom') if filters else None
+        semaine_id = filters.get('semaine_id') if filters else None
+        
+        if preparateur_nom and semaine_id:
+            # Recalcul spécifique
+            success = calculator.update_preparateur_disponibilite(preparateur_nom, semaine_id)
+            result_message = f"Recalcul {'réussi' if success else 'échoué'} pour {preparateur_nom} - semaine {semaine_id}"
+            
+            return {
+                "status": "✅ Recalcul spécifique effectué",
+                "message": result_message,
+                "filters_applied": {"preparateur": preparateur_nom, "semaine": semaine_id}
+            }
+            
+        elif semaine_id:
+            # Recalcul pour une semaine entière
+            results = calculator.update_all_disponibilites_semaine(semaine_id)
+            successful_updates = sum(1 for success in results.values() if success)
+            
+            return {
+                "status": "✅ Recalcul pour toute la semaine effectué",
+                "message": f"Disponibilités recalculées pour {successful_updates}/{len(results)} préparateurs",
+                "semaine": semaine_id,
+                "details": results
+            }
+            
+        elif preparateur_nom:
+            # Recalcul pour un préparateur sur toutes ses semaines
+            recalcul_info = recalculate_disponibilites(conn, preparateur_nom=preparateur_nom)
+            
+            return {
+                "status": "✅ Recalcul pour le préparateur effectué",
+                "message": recalcul_info,
+                "preparateur": preparateur_nom
+            }
+            
+        else:
+            # Recalcul global de toutes les disponibilités existantes
+            stats = calculator.recalculate_all_disponibilites()
+            
+            return {
+                "status": "✅ Recalcul global effectué",
+                "message": "Toutes les disponibilités ont été recalculées",
+                "statistics": stats
+            }
+        
+    except Exception as e:
+        return {
+            "status": "❌ Erreur lors du recalcul",
+            "error": str(e),
+            "filters_applied": filters or "aucun"
+        }
+    finally:
+        if conn:
+            conn.close()
 
 
 # Verouillages des chantiers
@@ -1529,10 +1661,14 @@ def update_horaires_preparateur(preparateur_nom: str, horaires_data: Dict[str, A
         
         conn.commit()
         
+        # Recalculer les disponibilités pour ce préparateur
+        recalcul_info = recalculate_disponibilites(conn, preparateur_nom=preparateur_nom)
+        
         return {
             "status": "✅ Horaires mis à jour",
             "preparateur": preparateur_nom,
-            "message": f"Horaires de {preparateur_nom} synchronisés avec succès"
+            "message": f"Horaires de {preparateur_nom} synchronisés avec succès",
+            "disponibilites_recalcul": recalcul_info
         }
         
     except Exception as e:
@@ -1605,10 +1741,19 @@ def sync_all_horaires(horaires_data: Dict[str, Any]):
         
         conn.commit()
         
+        # Recalculer les disponibilités pour tous les préparateurs modifiés
+        preparateurs_modifies = list(horaires_data.keys())
+        recalculs_info = []
+        for prep_nom in preparateurs_modifies:
+            if isinstance(horaires_data[prep_nom], dict):
+                recalcul_info = recalculate_disponibilites(conn, preparateur_nom=prep_nom)
+                recalculs_info.append(f"{prep_nom}: {recalcul_info}")
+        
         return {
             "status": "✅ Synchronisation complète",
             "message": f"Horaires de {len(horaires_data)} préparateur(s) synchronisés",
-            "total_creneaux": total_creneaux
+            "total_creneaux": total_creneaux,
+            "disponibilites_recalcul": recalculs_info
         }
         
     except Exception as e:
@@ -1638,10 +1783,14 @@ def delete_horaires_preparateur(preparateur_nom: str):
         
         conn.commit()
         
+        # Recalculer les disponibilités pour ce préparateur (ses disponibilités vont devenir 0)
+        recalcul_info = recalculate_disponibilites(conn, preparateur_nom=preparateur_nom)
+        
         return {
             "status": "✅ Horaires supprimés",
             "preparateur": preparateur_nom,
-            "creneaux_supprimes": count_before
+            "creneaux_supprimes": count_before,
+            "disponibilites_recalcul": recalcul_info
         }
         
     except Exception as e:
@@ -1788,6 +1937,27 @@ def create_etiquette_grille(etiquette_data: Dict[str, Any]):
         
         conn.commit()
         
+        # Recalculer les disponibilités pour tous les préparateurs affectés par cette étiquette
+        preparateurs_affectes = set()
+        semaines_affectees = set()
+        recalculs_info = []
+        
+        for planif in planifications_creees:
+            # Extraire les préparateurs de cette planification
+            preparateurs = [p.strip() for p in planif['preparateurs'].split(',') if p.strip()]
+            preparateurs_affectes.update(preparateurs)
+            
+            # Extraire la semaine de cette planification
+            semaine = extract_semaine_from_date(planif['date_jour'])
+            if semaine:
+                semaines_affectees.add(semaine)
+        
+        # Recalculer les disponibilités pour chaque combinaison préparateur/semaine
+        for preparateur in preparateurs_affectes:
+            for semaine in semaines_affectees:
+                recalcul_info = recalculate_disponibilites(conn, preparateur_nom=preparateur, semaine_id=semaine)
+                recalculs_info.append(f"{preparateur} S{semaine}: {recalcul_info}")
+        
         return {
             "status": "✅ Étiquette créée",
             "etiquette": {
@@ -1798,7 +1968,8 @@ def create_etiquette_grille(etiquette_data: Dict[str, Any]):
                 "created_at": etiquette_result[1].isoformat(),
                 "updated_at": etiquette_result[2].isoformat(),
                 "planifications": planifications_creees
-            }
+            },
+            "disponibilites_recalcul": recalculs_info
         }
         
     except HTTPException:
@@ -1867,9 +2038,32 @@ def update_etiquette_grille(etiquette_id: int, etiquette_data: Dict[str, Any]):
         
         conn.commit()
         
+        # Recalculer les disponibilités si des planifications ont été mises à jour
+        recalculs_info = []
+        if 'planifications' in etiquette_data:
+            preparateurs_affectes = set()
+            semaines_affectees = set()
+            
+            for planif in etiquette_data['planifications']:
+                # Extraire les préparateurs
+                preparateurs = [p.strip() for p in planif['preparateurs'].split(',') if p.strip()]
+                preparateurs_affectes.update(preparateurs)
+                
+                # Extraire la semaine
+                semaine = extract_semaine_from_date(planif['date_jour'])
+                if semaine:
+                    semaines_affectees.add(semaine)
+            
+            # Recalculer les disponibilités
+            for preparateur in preparateurs_affectes:
+                for semaine in semaines_affectees:
+                    recalcul_info = recalculate_disponibilites(conn, preparateur_nom=preparateur, semaine_id=semaine)
+                    recalculs_info.append(f"{preparateur} S{semaine}: {recalcul_info}")
+        
         return {
             "status": "✅ Étiquette mise à jour",
-            "etiquette_id": etiquette_id
+            "etiquette_id": etiquette_id,
+            "disponibilites_recalcul": recalculs_info if recalculs_info else "Aucun recalcul nécessaire"
         }
         
     except HTTPException:
@@ -1908,6 +2102,18 @@ def update_etiquette_horaires(etiquette_id: int, horaires_data: Dict[str, Any]):
         if horaires_data['heure_debut'] >= horaires_data['heure_fin']:
             raise HTTPException(status_code=400, detail=f"Heure de début ({horaires_data['heure_debut']}) doit être < heure de fin ({horaires_data['heure_fin']})")
         
+        # Récupérer les informations de la planification avant mise à jour pour le recalcul
+        cur.execute("""
+            SELECT date_jour, preparateurs FROM planifications_etiquettes 
+            WHERE id = %s AND etiquette_id = %s
+        """, (horaires_data['planification_id'], etiquette_id))
+        
+        planif_info = cur.fetchone()
+        if not planif_info:
+            raise HTTPException(status_code=404, detail="Planification non trouvée pour cette étiquette")
+        
+        date_jour, preparateurs = planif_info
+        
         # Mettre à jour seulement les heures de la planification spécifique
         cur.execute("""
             UPDATE planifications_etiquettes 
@@ -1932,10 +2138,21 @@ def update_etiquette_horaires(etiquette_id: int, horaires_data: Dict[str, Any]):
         
         conn.commit()
         
+        # Recalculer les disponibilités pour tous les préparateurs affectés par cette planification
+        preparateurs_list = [p.strip() for p in preparateurs.split(',') if p.strip()]
+        semaine = extract_semaine_from_date(str(date_jour))
+        recalculs_info = []
+        
+        if semaine:
+            for preparateur in preparateurs_list:
+                recalcul_info = recalculate_disponibilites(conn, preparateur_nom=preparateur, semaine_id=semaine)
+                recalculs_info.append(f"{preparateur} S{semaine}: {recalcul_info}")
+        
         return {
             "status": "✅ Horaires mis à jour",
             "etiquette_id": etiquette_id,
-            "planification_id": horaires_data['planification_id']
+            "planification_id": horaires_data['planification_id'],
+            "disponibilites_recalcul": recalculs_info
         }
         
     except HTTPException:
@@ -1995,6 +2212,16 @@ def add_planification_to_etiquette(etiquette_id: int, planification_data: dict):
         
         conn.commit()
         
+        # Recalculer les disponibilités pour tous les préparateurs affectés par cette nouvelle planification
+        preparateurs_list = [p.strip() for p in planification_data['preparateurs'].split(',') if p.strip()]
+        semaine = extract_semaine_from_date(planification_data['date_jour'])
+        recalculs_info = []
+        
+        if semaine:
+            for preparateur in preparateurs_list:
+                recalcul_info = recalculate_disponibilites(conn, preparateur_nom=preparateur, semaine_id=semaine)
+                recalculs_info.append(f"{preparateur} S{semaine}: {recalcul_info}")
+        
         return {
             "status": "✅ Planification ajoutée",
             "etiquette_id": etiquette_id,
@@ -2002,7 +2229,8 @@ def add_planification_to_etiquette(etiquette_id: int, planification_data: dict):
             "date_jour": planification_data['date_jour'],
             "heure_debut": planification_data['heure_debut'],
             "heure_fin": planification_data['heure_fin'],
-            "preparateurs": planification_data['preparateurs']
+            "preparateurs": planification_data['preparateurs'],
+            "disponibilites_recalcul": recalculs_info
         }
         
     except HTTPException:
@@ -2133,6 +2361,32 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
         
         conn.commit()
         
+        # Recalculer les disponibilités pour les préparateurs affectés par cette mise à jour
+        # Il faut recalculer pour l'ancienne configuration ET la nouvelle
+        preparateurs_affectes = set()
+        
+        # Ajouter les anciens préparateurs (pour recalculer leur libération de temps)
+        if current_preparateurs:
+            anciens_preparateurs = [p.strip() for p in current_preparateurs.split(',') if p.strip()]
+            preparateurs_affectes.update(anciens_preparateurs)
+        
+        # Ajouter les nouveaux préparateurs (pour recalculer leur occupation de temps)
+        nouveaux_preparateurs_list = [p.strip() for p in nouveaux_preparateurs.split(',') if p.strip()]
+        preparateurs_affectes.update(nouveaux_preparateurs_list)
+        
+        # Déterminer les semaines affectées
+        semaines_affectees = set()
+        semaine_nouvelle = extract_semaine_from_date(update_data['date_jour'])
+        if semaine_nouvelle:
+            semaines_affectees.add(semaine_nouvelle)
+        
+        # Recalculer les disponibilités
+        recalculs_info = []
+        for preparateur in preparateurs_affectes:
+            for semaine in semaines_affectees:
+                recalcul_info = recalculate_disponibilites(conn, preparateur_nom=preparateur, semaine_id=semaine)
+                recalculs_info.append(f"{preparateur} S{semaine}: {recalcul_info}")
+        
         return {
             "status": "✅ Planification spécifique mise à jour",
             "etiquette_id": etiquette_id,
@@ -2144,7 +2398,8 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
             "nouveaux_preparateurs": nouveaux_preparateurs,
             "doublons_detectes": doublons_detectes,
             "doublons_supprimes": doublons_supprimes if doublons_detectes else 0,
-            "preparateurs_avant_dedoublonnage": preparateurs_avant_dedoublonnage if doublons_detectes else None
+            "preparateurs_avant_dedoublonnage": preparateurs_avant_dedoublonnage if doublons_detectes else None,
+            "disponibilites_recalcul": recalculs_info
         }
         
     except HTTPException:
@@ -2262,10 +2517,12 @@ def delete_etiquette_grille(etiquette_id: int):
         ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
-        # Récupérer les informations avant suppression
+        # Récupérer les informations avant suppression pour le recalcul des disponibilités
         cur.execute("""
             SELECT e.type_activite, e.description, e.group_id, 
-                   COUNT(p.id) as nb_planifications
+                   COUNT(p.id) as nb_planifications,
+                   STRING_AGG(DISTINCT p.preparateurs, '|') as all_preparateurs,
+                   STRING_AGG(DISTINCT p.date_jour::text, ',') as all_dates
             FROM etiquettes_grille e
             LEFT JOIN planifications_etiquettes p ON e.id = p.etiquette_id
             WHERE e.id = %s
@@ -2276,11 +2533,36 @@ def delete_etiquette_grille(etiquette_id: int):
         if not result:
             raise HTTPException(status_code=404, detail="Étiquette non trouvée")
         
-        type_activite, description, group_id, nb_planifications = result
+        type_activite, description, group_id, nb_planifications, all_preparateurs, all_dates = result
+        
+        # Collecter les préparateurs et semaines affectés avant suppression
+        preparateurs_affectes = set()
+        semaines_affectees = set()
+        
+        if all_preparateurs and all_dates:
+            # Extraire tous les préparateurs uniques
+            for prep_string in all_preparateurs.split('|'):
+                if prep_string:
+                    preparateurs = [p.strip() for p in prep_string.split(',') if p.strip()]
+                    preparateurs_affectes.update(preparateurs)
+            
+            # Extraire toutes les semaines uniques
+            for date_str in all_dates.split(','):
+                if date_str:
+                    semaine = extract_semaine_from_date(date_str)
+                    if semaine:
+                        semaines_affectees.add(semaine)
         
         # Supprimer l'étiquette (les planifications sont supprimées automatiquement via CASCADE)
         cur.execute("DELETE FROM etiquettes_grille WHERE id = %s", (etiquette_id,))
         conn.commit()
+        
+        # Recalculer les disponibilités pour tous les préparateurs qui étaient affectés
+        recalculs_info = []
+        for preparateur in preparateurs_affectes:
+            for semaine in semaines_affectees:
+                recalcul_info = recalculate_disponibilites(conn, preparateur_nom=preparateur, semaine_id=semaine)
+                recalculs_info.append(f"{preparateur} S{semaine}: {recalcul_info}")
         
         return {
             "status": "✅ Étiquette supprimée",
@@ -2288,7 +2570,8 @@ def delete_etiquette_grille(etiquette_id: int):
             "type_activite": type_activite,
             "description": description,
             "group_id": group_id,
-            "planifications_supprimees": nb_planifications
+            "planifications_supprimees": nb_planifications,
+            "disponibilites_recalcul": recalculs_info
         }
         
     except HTTPException:
@@ -2361,6 +2644,16 @@ def delete_planification_etiquette(etiquette_id: int, planification_id: int):
         
         conn.commit()
         
+        # Recalculer les disponibilités pour tous les préparateurs qui étaient affectés par cette planification
+        preparateurs_list = [p.strip() for p in preparateurs.split(',') if p.strip()]
+        semaine = extract_semaine_from_date(str(date_jour))
+        recalculs_info = []
+        
+        if semaine:
+            for preparateur in preparateurs_list:
+                recalcul_info = recalculate_disponibilites(conn, preparateur_nom=preparateur, semaine_id=semaine)
+                recalculs_info.append(f"{preparateur} S{semaine}: {recalcul_info}")
+        
         return {
             "status": "✅ Planification supprimée",
             "etiquette_id": etiquette_id,
@@ -2374,7 +2667,8 @@ def delete_planification_etiquette(etiquette_id: int, planification_id: int):
                 "heure_fin": str(heure_fin),
                 "preparateurs": preparateurs
             },
-            "planifications_restantes": nb_planifications_total - 1
+            "planifications_restantes": nb_planifications_total - 1,
+            "disponibilites_recalcul": recalculs_info
         }
         
     except HTTPException:
@@ -2459,6 +2753,14 @@ def remove_preparateur_from_planification(etiquette_id: int, planification_id: i
         
         conn.commit()
         
+        # Recalculer les disponibilités pour le préparateur retiré (il récupère du temps libre)
+        semaine = extract_semaine_from_date(str(date_jour))
+        recalculs_info = []
+        
+        if semaine:
+            recalcul_info = recalculate_disponibilites(conn, preparateur_nom=preparateur_nom_clean, semaine_id=semaine)
+            recalculs_info.append(f"{preparateur_nom_clean} S{semaine}: {recalcul_info}")
+        
         return {
             "status": "✅ Préparateur retiré de la planification",
             "etiquette_id": etiquette_id,
@@ -2474,7 +2776,8 @@ def remove_preparateur_from_planification(etiquette_id: int, planification_id: i
             },
             "preparateurs_avant": preparateurs_actuels,
             "preparateurs_apres": nouveaux_preparateurs,
-            "preparateurs_restants": len(preparateurs_list)
+            "preparateurs_restants": len(preparateurs_list),
+            "disponibilites_recalcul": recalculs_info
         }
         
     except HTTPException:
