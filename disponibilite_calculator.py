@@ -196,14 +196,20 @@ class DisponibiliteCalculator:
         Convertit un ID de semaine en dates de début et fin
         
         Args:
-            semaine_id: Format "2025-W34"
+            semaine_id: Format "2025-W34" ou "2025-W34-1"
             
         Returns:
             Tuple[str, str]: (date_debut, date_fin) au format YYYY-MM-DD
         """
         try:
-            # Parser le format "2025-W34"
-            year_str, week_str = semaine_id.split('-W')
+            # Parser le format "2025-W34" ou "2025-W34-1"
+            if '-1' in semaine_id:
+                # Format avec suffixe -1
+                year_week_part = semaine_id.replace('-1', '')
+            else:
+                year_week_part = semaine_id
+                
+            year_str, week_str = year_week_part.split('-W')
             year = int(year_str)
             week = int(week_str)
             
