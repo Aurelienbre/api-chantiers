@@ -5,7 +5,7 @@ import os
 import json
 
 # Importer les routers
-from routes.beta_api_routes import router as beta_api_router
+from beta_api_routes import router as beta_api_router
 
 # Configuration de la base de données
 def get_db_connection():
