@@ -365,18 +365,26 @@ def health_check():
     if connection_pool:
         try:
             if hasattr(connection_pool, 'get_stats'):
-                # psycopg3 pool stats
+                # psycopg3 pool stats - c'est un DICTIONNAIRE !
                 stats = connection_pool.get_stats()
                 pool_info = {
-                    "pool_size": stats.pool_size,
-                    "pool_available": stats.pool_available,
-                    "requests_waiting": stats.requests_waiting
+                    "pool_size": stats.get("pool_size", "N/A"),           
+                    "pool_available": stats.get("pool_available", "N/A"), 
+                    "requests_waiting": stats.get("requests_waiting", "N/A"), 
+                    "max_idle": "10 secondes",
+                    "max_lifetime": "5 minutes"
                 }
             else:
                 # psycopg2 pool - info basique
-                pool_info = {"pool": "active", "type": "psycopg2"}
+                pool_info = {
+                    "pool": "active", 
+                    "type": "psycopg2",
+                    "note": "Stats limitées"
+                }
         except Exception as e:
             pool_info = {"pool_error": str(e)}
+    else:
+        pool_info = {"pool": "disabled", "reason": "Pool non initialisé"}
     
     return {
         "status": "healthy", 
