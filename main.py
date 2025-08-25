@@ -5,9 +5,19 @@ import os
 import json
 
 
-from beta_api_routes import router as beta_api_router
-from grille_semaine_routes import router as grille_semaine_router
- 
+try:
+    from beta_api_routes import router as beta_api_router
+    BETA_API_AVAILABLE = True
+except ImportError:
+    beta_api_router = None
+    BETA_API_AVAILABLE = False
+
+try:
+    from grille_semaine_routes import router as grille_semaine_router
+    GRILLE_SEMAINE_AVAILABLE = True
+except ImportError:
+    grille_semaine_router = None
+    GRILLE_SEMAINE_AVAILABLE = False
 
 
 # Configuration de la base de données
