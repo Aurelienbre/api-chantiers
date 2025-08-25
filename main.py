@@ -21,13 +21,23 @@ def init_connection_pool():
         import psycopg_pool
         connection_pool = psycopg_pool.ConnectionPool(
             database_url, 
-            min_size=2,        # Minimum 2 connexions
-            max_size=10,       # Maximum 10 connexions
-            max_idle=10,       # ✅ 10 secondes d'inactivité max (pas 300 !)
-            max_lifetime=300,  # ✅ 5 minutes de durée de vie max (pas 1800 !)
-            timeout=5          # ✅ 5 secondes max pour obtenir une connexion
+            min_size=2,        
+            max_size=10,       
+            max_idle=10,       
+            max_lifetime=300,  
+            timeout=5,
+            # ✨ NOUVELLES OPTIMISATIONS ULTRA-MODERNES :
+            reconnect_timeout=30,            # Reconnexion automatique si DB restart
+            reconnect_failed=2,              # 2 tentatives de reconnexion
+            kwargs={                         # Optimisations TCP/SSL avancées
+                "sslmode": "require",        # SSL obligatoire
+                "connect_timeout": 5,        # 5 sec timeout connexion
+                "keepalives_idle": 600,      # 10 min avant premier keep-alive
+                "keepalives_interval": 30,   # Keep-alive toutes les 30 sec
+                "keepalives_count": 3        # 3 tentatives keep-alive avant abandon
+            }
         )
-        print("✅ Pool de connexions psycopg3 initialisé (2-10 connexions)")
+        print("✅ Pool de connexions psycopg3 ULTRA-MODERNE initialisé (2-10 connexions)")
     except ImportError:
         try:
             # Fallback sur psycopg2 avec pool simple
