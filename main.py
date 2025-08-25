@@ -51,22 +51,24 @@ def init_connection_pool():
             connection_pool = None
 
 def get_db_connection():
-    """Obtenir une connexion du pool (ou créer une nouvelle si pas de pool)"""
+    """Obtenir une connexion du pool avec tracking de l'origine"""
     global connection_pool
     database_url = os.environ.get('DATABASE_URL')
     
     if not database_url:
         raise Exception("DATABASE_URL non définie")
     
-    # Si le pool est disponible, l'utiliser    ← ✅ Indenter correctement !
+    # Si le pool est disponible, l'utiliser    
     if connection_pool:
         try:
             if hasattr(connection_pool, 'getconn'):
                 # psycopg2 pool
-                return connection_pool.getconn()
+                conn = connection_pool.getconn()
+                return conn, 'psycopg2_pool'
             else:
                 # psycopg3 pool - utilise connection() pas getconn()
-                return connection_pool.connection()  
+                conn = connection_pool.connection()
+                return conn, 'psycopg3_pool'
         except Exception as e:
             print(f"⚠️ Erreur pool, fallback connexion directe: {e}")
     
@@ -74,39 +76,49 @@ def get_db_connection():
     try:
         # Essayer psycopg3 d'abord
         import psycopg
-        return psycopg.connect(database_url)
+        conn = psycopg.connect(database_url)
+        return conn, 'direct_psycopg3'
     except ImportError:
         try:
             # Fallback sur psycopg2
             import psycopg2
-            return psycopg2.connect(database_url)
+            conn = psycopg2.connect(database_url)
+            return conn, 'direct_psycopg2'
         except ImportError:
             raise Exception("Aucun module psycopg disponible")
         
 
-def close_db_connection(conn):
-    """Libérer une connexion vers le pool (ou la fermer si pas de pool)"""
+def close_db_connection(conn_info):
+    """Libérer une connexion selon son type"""
+    if isinstance(conn_info, tuple):
+        conn, conn_type = conn_info
+    else:
+        # Rétrocompatibilité
+        conn = conn_info
+        conn_type = 'unknown'
+    
     global connection_pool
     
-    if connection_pool:
-        try:
-            if hasattr(connection_pool, 'putconn'):
-                # psycopg2 pool
-                connection_pool.putconn(conn)
-                return
-            else:
-                # psycopg3 pool - la connexion se libère automatiquement
-                # Il suffit de fermer la connexion normalement
-                conn.close()
-                return
-        except Exception as e:
-            print(f"⚠️ Erreur lors de la libération vers le pool: {e}")
-    
-    # Fallback : fermer normalement
     try:
-        conn.close()
-    except:
-        pass
+        if conn_type == 'psycopg2_pool' and connection_pool:
+            # psycopg2 pool - remettre dans le pool
+            connection_pool.putconn(conn)
+            
+        elif conn_type == 'psycopg3_pool':
+            # psycopg3 pool - NE PAS FERMER ! Le pool gère automatiquement
+            # La connexion retourne au pool automatiquement
+            pass
+            
+        else:
+            # Connexion directe - fermer normalement
+            conn.close()
+            
+    except Exception as e:
+        print(f"⚠️ Erreur lors de la libération: {e}")
+        try:
+            conn.close()
+        except:
+            pass
 
 # Import conditionnel des routers pour éviter les erreurs de déploiement
 try:
@@ -170,135 +182,176 @@ def ensure_chantiers_tables(conn):
     """S'assurer que les tables pour les chantiers et préparateurs existent"""
     cur = conn.cursor()
     
-    # Table des préparateurs
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS preparateurs (
-            nom VARCHAR(255) PRIMARY KEY,
-            nni VARCHAR(50) NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Table des chantiers
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS chantiers (
-            id VARCHAR(255) PRIMARY KEY,
-            label VARCHAR(500) NOT NULL,
-            status VARCHAR(100) DEFAULT 'Nouveau',
-            prepTime INTEGER DEFAULT 0,
-            endDate VARCHAR(50),
-            preparateur_nom VARCHAR(255) REFERENCES preparateurs(nom) ON UPDATE CASCADE ON DELETE SET NULL,
-            ChargeRestante INTEGER DEFAULT 0,
-            forced_planning_lock JSONB DEFAULT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Table des planifications
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS planifications (
-            id SERIAL PRIMARY KEY,
-            chantier_id VARCHAR(255) NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
-            semaine VARCHAR(50) NOT NULL,
-            minutes INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            
-            CONSTRAINT unique_chantier_semaine UNIQUE (chantier_id, semaine)
-        )
-    """)
-    
-    # Table des soldes
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS soldes (
-            id SERIAL PRIMARY KEY,
-            chantier_id VARCHAR(255) NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
-            semaine VARCHAR(50) NOT NULL,
-            minutes INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            
-            CONSTRAINT unique_solde_chantier_semaine UNIQUE (chantier_id, semaine)
-        )
-    """)
-    
-    # Table des disponibilités
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS disponibilites (
-            id SERIAL PRIMARY KEY,
-            preparateur_nom VARCHAR(255) NOT NULL REFERENCES preparateurs(nom) ON UPDATE CASCADE ON DELETE CASCADE,
-            semaine VARCHAR(50) NOT NULL,
-            minutes INTEGER NOT NULL DEFAULT 0,
-            updatedAt VARCHAR(100) DEFAULT '',
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            
-            CONSTRAINT unique_dispo_preparateur_semaine UNIQUE (preparateur_nom, semaine)
-        )
-    """)
-    
-    # Table des horaires préparateurs
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS horaires_preparateurs (
-            id SERIAL PRIMARY KEY,
-            preparateur_nom VARCHAR(255) NOT NULL REFERENCES preparateurs(nom) ON UPDATE CASCADE ON DELETE CASCADE,
-            jour_semaine VARCHAR(20) NOT NULL,
-            heure_debut TIME NOT NULL,
-            heure_fin TIME NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            
-            CONSTRAINT check_jour_semaine CHECK (jour_semaine IN ('lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche')),
-            CONSTRAINT check_heures_horaires CHECK (heure_debut < heure_fin)
-        )
-    """)
-    
-    # Index pour améliorer les performances
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_chantiers_status ON chantiers (status)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_chantiers_preparateur ON chantiers (preparateur_nom)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_chantiers_forced_planning_lock ON chantiers USING GIN (forced_planning_lock)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_chantier ON planifications (chantier_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_semaine ON planifications (semaine)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_soldes_chantier ON soldes (chantier_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_soldes_semaine ON soldes (semaine)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_disponibilites_preparateur ON disponibilites (preparateur_nom)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_disponibilites_semaine ON disponibilites (semaine)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_horaires_preparateur ON horaires_preparateurs (preparateur_nom)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_horaires_jour ON horaires_preparateurs (jour_semaine)")
-    
-    # Fonction pour mettre à jour updated_at automatiquement
-    cur.execute("""
-        CREATE OR REPLACE FUNCTION update_updated_at_column()
-        RETURNS TRIGGER AS $$
-        BEGIN
-            NEW.updated_at = CURRENT_TIMESTAMP;
-            RETURN NEW;
-        END;
-        $$ language 'plpgsql';
-    """)
-    
-    # Triggers pour mettre à jour updated_at --> Preparateurs/Chantiers/Horaires préparateurs
-    cur.execute("""
-        DROP TRIGGER IF EXISTS update_preparateurs_updated_at ON preparateurs;
-        CREATE TRIGGER update_preparateurs_updated_at 
-            BEFORE UPDATE ON preparateurs 
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-    """)
-    
-    cur.execute("""
-        DROP TRIGGER IF EXISTS update_chantiers_updated_at ON chantiers;
-        CREATE TRIGGER update_chantiers_updated_at 
-            BEFORE UPDATE ON chantiers 
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-    """)
-    
-    cur.execute("""
-        DROP TRIGGER IF EXISTS update_horaires_updated_at ON horaires_preparateurs;
-        CREATE TRIGGER update_horaires_updated_at 
-            BEFORE UPDATE ON horaires_preparateurs 
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-    """)
-    
-    conn.commit()
+    try:
+        # ========================================================================
+        # 1. CRÉATION DES TABLES PRINCIPALES
+        # ========================================================================
+        
+        # Table des préparateurs (doit être créée en premier pour les références)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS preparateurs (
+                nom VARCHAR(255) PRIMARY KEY,
+                nni VARCHAR(50) NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Table des chantiers (SANS forced_planning_lock)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS chantiers (
+                id VARCHAR(255) PRIMARY KEY,
+                label VARCHAR(500) NOT NULL,
+                status VARCHAR(100) DEFAULT 'Nouveau',
+                prepTime INTEGER DEFAULT 0,
+                endDate VARCHAR(50),
+                preparateur_nom VARCHAR(255) REFERENCES preparateurs(nom) ON UPDATE CASCADE ON DELETE SET NULL,
+                ChargeRestante INTEGER DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # Table des planifications
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS planifications (
+                id SERIAL PRIMARY KEY,
+                chantier_id VARCHAR(255) NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
+                semaine VARCHAR(50) NOT NULL,
+                minutes INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                
+                CONSTRAINT unique_chantier_semaine UNIQUE (chantier_id, semaine)
+            )
+        """)
+        
+        # Table des soldes
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS soldes (
+                id SERIAL PRIMARY KEY,
+                chantier_id VARCHAR(255) NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
+                semaine VARCHAR(50) NOT NULL,
+                minutes INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                
+                CONSTRAINT unique_solde_chantier_semaine UNIQUE (chantier_id, semaine)
+            )
+        """)
+
+        # Table des verrous de planification (NOUVEAU !)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS verrous_planification (
+                id SERIAL PRIMARY KEY,
+                chantier_id VARCHAR(255) NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
+                semaine VARCHAR(50) NOT NULL,
+                preparateur_nom VARCHAR(255) NOT NULL,
+                minutes INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                
+                CONSTRAINT unique_verrou_chantier_semaine UNIQUE (chantier_id, semaine)
+            )
+        """)
+
+        # Table des disponibilités
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS disponibilites (
+                id SERIAL PRIMARY KEY,
+                preparateur_nom VARCHAR(255) NOT NULL REFERENCES preparateurs(nom) ON UPDATE CASCADE ON DELETE CASCADE,
+                semaine VARCHAR(50) NOT NULL,
+                minutes INTEGER NOT NULL DEFAULT 0,
+                updatedAt VARCHAR(100) DEFAULT '',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                
+                CONSTRAINT unique_dispo_preparateur_semaine UNIQUE (preparateur_nom, semaine)
+            )
+        """)
+        
+        # Table des horaires préparateurs
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS horaires_preparateurs (
+                id SERIAL PRIMARY KEY,
+                preparateur_nom VARCHAR(255) NOT NULL REFERENCES preparateurs(nom) ON UPDATE CASCADE ON DELETE CASCADE,
+                jour_semaine VARCHAR(20) NOT NULL,
+                heure_debut TIME NOT NULL,
+                heure_fin TIME NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                
+                CONSTRAINT check_jour_semaine CHECK (jour_semaine IN ('lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche')),
+                CONSTRAINT check_heures_horaires CHECK (heure_debut < heure_fin)
+            )
+        """)
+        
+        # ========================================================================
+        # 2. MIGRATION : SUPPRIMER L'ANCIENNE COLONNE FORCED_PLANNING_LOCK
+        # ========================================================================
+        
+        # Vérifier si l'ancienne colonne existe et la supprimer
+        cur.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'chantiers' AND column_name = 'forced_planning_lock'
+        """)
+        if cur.fetchone():
+            print("🔄 Migration: Suppression de forced_planning_lock")
+            cur.execute("DROP INDEX IF EXISTS idx_chantiers_forced_planning_lock")
+            cur.execute("ALTER TABLE chantiers DROP COLUMN forced_planning_lock")
+            print("✅ Migration: forced_planning_lock supprimé")
+        
+        # Index pour améliorer les performances
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_chantiers_status ON chantiers (status)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_chantiers_preparateur ON chantiers (preparateur_nom)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_chantier ON planifications (chantier_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_semaine ON planifications (semaine)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_soldes_chantier ON soldes (chantier_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_soldes_semaine ON soldes (semaine)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_verrous_chantier ON verrous_planification (chantier_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_verrous_semaine ON verrous_planification (semaine)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_disponibilites_preparateur ON disponibilites (preparateur_nom)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_disponibilites_semaine ON disponibilites (semaine)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_horaires_preparateur ON horaires_preparateurs (preparateur_nom)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_horaires_jour ON horaires_preparateurs (jour_semaine)")
+        
+        # Fonction pour mettre à jour updated_at automatiquement
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION update_updated_at_column()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.updated_at = CURRENT_TIMESTAMP;
+                RETURN NEW;
+            END;
+            $$ language 'plpgsql';
+        """)
+        
+        # Triggers pour mettre à jour updated_at
+        cur.execute("""
+            DROP TRIGGER IF EXISTS update_preparateurs_updated_at ON preparateurs;
+            CREATE TRIGGER update_preparateurs_updated_at 
+                BEFORE UPDATE ON preparateurs 
+                FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        """)
+        
+        cur.execute("""
+            DROP TRIGGER IF EXISTS update_chantiers_updated_at ON chantiers;
+            CREATE TRIGGER update_chantiers_updated_at 
+                BEFORE UPDATE ON chantiers 
+                FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        """)
+        
+        cur.execute("""
+            DROP TRIGGER IF EXISTS update_horaires_updated_at ON horaires_preparateurs;
+            CREATE TRIGGER update_horaires_updated_at 
+                BEFORE UPDATE ON horaires_preparateurs 
+                FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+        """)
+        
+        conn.commit()
+        print("✅ Tables créées/vérifiées avec succès")
+        
+    except Exception as e:
+        print(f"🚨 Erreur lors de la création des tables: {e}")
+        conn.rollback()
+        raise
 
 
 from contextlib import asynccontextmanager
