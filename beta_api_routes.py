@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException
 from typing import Dict, Optional, Any
 import os
 import json
+from main import get_db_connection, close_db_connection
 
 
 # Créer le router pour les routes Beta-API
@@ -22,25 +23,6 @@ router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
-
-def get_db_connection():
-    """Établit une connexion à la base PostgreSQL"""
-    database_url = os.environ.get('DATABASE_URL')
-    
-    if not database_url:
-        raise Exception("DATABASE_URL non définie")
-    
-    try:
-        # Essayer psycopg3 d'abord
-        import psycopg
-        return psycopg.connect(database_url)
-    except ImportError:
-        try:
-            # Fallback sur psycopg2
-            import psycopg2
-            return psycopg2.connect(database_url)
-        except ImportError:
-            raise Exception("Aucun module psycopg disponible")
 
 
 def ensure_chantiers_tables(conn):
@@ -188,17 +170,16 @@ def ensure_chantiers_tables(conn):
 def get_preparateurs():
     """Récupérer tous les préparateurs depuis PostgreSQL"""
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         # Créer les tables si elles n'existent pas
         ensure_chantiers_tables(conn)
         cur = conn.cursor()
         
         cur.execute("SELECT nom, nni FROM preparateurs ORDER BY nom")
         rows = cur.fetchall()
-        conn.close()
-        
+        close_db_connection(conn)
+
         # Convertir en dictionnaire nom -> nni
         preparateurs = {row[0]: row[1] for row in rows}
         
@@ -212,9 +193,8 @@ def get_preparateurs():
 def sync_preparateurs(preparateurs_data: Dict[str, Any]):
     """Synchroniser les préparateurs avec PostgreSQL"""
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         preparateurs = preparateurs_data.get('preparateurs', {})
@@ -230,8 +210,8 @@ def sync_preparateurs(preparateurs_data: Dict[str, Any]):
             synced_count += 1
         
         conn.commit()
-        conn.close()
-        
+        close_db_connection(conn)
+
         return {"status": "✅ Préparateurs synchronisés", "count": synced_count}
         
     except Exception as e:
@@ -242,7 +222,6 @@ def sync_preparateurs(preparateurs_data: Dict[str, Any]):
 def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
     """Modifier un préparateur (nom et/ou NNI) avec mise à jour en cascade"""
     try:
-        from database_config import get_database_connection
         
         nouveau_nom = preparateur_data.get('nom', ancien_nom)
         nouveau_nni = preparateur_data.get('nni')
@@ -250,7 +229,7 @@ def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
         if not nouveau_nni:
             raise HTTPException(status_code=400, detail="NNI requis")
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Vérifier que l'ancien préparateur existe
@@ -290,8 +269,8 @@ def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
             disponibilites_updated = 0
         
         conn.commit()
-        conn.close()
-        
+        close_db_connection(conn)
+
         return {
             "status": "✅ Préparateur modifié avec succès",
             "ancien_nom": ancien_nom,
@@ -309,9 +288,8 @@ def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
 def delete_preparateur(nom: str):
     """Supprimer un préparateur de PostgreSQL"""
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Supprimer d'abord les disponibilités liées à ce préparateur
@@ -327,8 +305,8 @@ def delete_preparateur(nom: str):
         chantiers_updated = cur.rowcount
         
         conn.commit()
-        conn.close()
-        
+        close_db_connection(conn)
+
         if preparateur_deleted > 0:
             return {
                 "status": "✅ Préparateur supprimé", 
@@ -350,9 +328,8 @@ def get_chantiers():
     """Récupérer tous les chantiers depuis PostgreSQL"""
     conn = None
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         # Créer les tables si elles n'existent pas
         ensure_chantiers_tables(conn)
         cur = conn.cursor()
@@ -452,7 +429,7 @@ def get_chantiers():
     finally:
         if conn:
             try:
-                conn.close()
+                close_db_connection(conn)
             except:
                 pass
 
@@ -461,9 +438,8 @@ def get_chantiers():
 def create_chantier(chantier: Dict[str, Any]):
     """Créer un nouveau chantier dans PostgreSQL"""
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Insérer le chantier
@@ -488,8 +464,8 @@ def create_chantier(chantier: Dict[str, Any]):
         ))
         
         conn.commit()
-        conn.close()
-        
+        close_db_connection(conn)
+
         return {"status": "✅ Chantier créé/mis à jour", "id": chantier.get('id')}
         
     except Exception as e:
@@ -500,9 +476,8 @@ def create_chantier(chantier: Dict[str, Any]):
 def update_chantier(chantier_id: str, chantier: Dict[str, Any]):
     """Mettre à jour un chantier existant"""
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Construire la requête dynamiquement selon les champs fournis
@@ -540,8 +515,8 @@ def update_chantier(chantier_id: str, chantier: Dict[str, Any]):
             raise HTTPException(status_code=404, detail="Chantier non trouvé")
         
         conn.commit()
-        conn.close()
-        
+        close_db_connection(conn)
+
         return {"status": "✅ Chantier mis à jour", "id": chantier_id}
         
     except Exception as e:
@@ -554,11 +529,10 @@ def update_chantier(chantier_id: str, chantier: Dict[str, Any]):
 def update_planification(planif: Dict[str, Any]):
     """Mettre à jour la planification d'un chantier avec préservation intelligente de l'historique"""
     try:
-        from database_config import get_database_connection
         from datetime import datetime, timedelta
         import re
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         chantier_id = planif.get('chantier_id')
@@ -606,8 +580,8 @@ def update_planification(planif: Dict[str, Any]):
                 inserted_count += 1
         
         conn.commit()
-        conn.close()
-        
+        close_db_connection(conn)
+
         return {
             "status": "✅ Planification mise à jour avec préservation intelligente",
             "chantier_id": chantier_id,
@@ -625,9 +599,8 @@ def update_planification(planif: Dict[str, Any]):
 def update_disponibilites(dispo: Dict[str, Any]):
     """Mettre à jour les disponibilités d'un préparateur"""
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         preparateur_nom = dispo.get('preparateur_nom')
@@ -648,8 +621,8 @@ def update_disponibilites(dispo: Dict[str, Any]):
                 """, (preparateur_nom, semaine, minutes, updated_at))
         
         conn.commit()
-        conn.close()
-        
+        close_db_connection(conn)
+
         return {"status": "✅ Disponibilités mises à jour", "preparateur": preparateur_nom}
         
     except Exception as e:
@@ -660,9 +633,8 @@ def update_disponibilites(dispo: Dict[str, Any]):
 def sync_complete_planning(data: Dict[str, Any]):
     """Synchronisation complète de la planification après répartition automatique"""
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Mettre à jour tous les chantiers
@@ -714,8 +686,8 @@ def sync_complete_planning(data: Dict[str, Any]):
                         """, (preparateur_nom, semaine, minutes, updated_at))
         
         conn.commit()
-        conn.close()
-        
+        close_db_connection(conn)
+
         return {"status": "✅ Planification complète synchronisée"}
         
     except Exception as e:
@@ -726,9 +698,8 @@ def sync_complete_planning(data: Dict[str, Any]):
 def get_disponibilites():
     """Récupérer toutes les disponibilités depuis PostgreSQL"""
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         cur.execute("""
@@ -738,8 +709,8 @@ def get_disponibilites():
         """)
         
         rows = cur.fetchall()
-        conn.close()
-        
+        close_db_connection(conn)
+
         # Regrouper par préparateur
         disponibilites = {}
         for row in rows:
@@ -764,14 +735,13 @@ def get_disponibilites():
 def get_forced_planning_lock(chantier_id: str):
     """Récupérer les verrous de planification forcée d'un chantier"""
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         cur.execute("SELECT forced_planning_lock FROM chantiers WHERE id = %s", (chantier_id,))
         row = cur.fetchone()
-        conn.close()
+        close_db_connection(conn)
         
         if not row:
             raise HTTPException(status_code=404, detail="Chantier non trouvé")
@@ -786,10 +756,9 @@ def get_forced_planning_lock(chantier_id: str):
 def update_forced_planning_lock(chantier_id: str, lock_data: Dict[str, Any]):
     """Mettre à jour les verrous de planification forcée d'un chantier"""
     try:
-        from database_config import get_database_connection
         import json
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Vérifier que le chantier existe
@@ -811,8 +780,8 @@ def update_forced_planning_lock(chantier_id: str, lock_data: Dict[str, Any]):
         """, (lock_json, chantier_id))
         
         conn.commit()
-        conn.close()
-        
+        close_db_connection(conn)
+
         return {
             "status": "✅ Verrous de planification mis à jour",
             "chantier_id": chantier_id,
@@ -827,9 +796,8 @@ def update_forced_planning_lock(chantier_id: str, lock_data: Dict[str, Any]):
 def clear_forced_planning_lock(chantier_id: str):
     """Supprimer tous les verrous de planification forcée d'un chantier"""
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Vérifier que le chantier existe
@@ -845,8 +813,8 @@ def clear_forced_planning_lock(chantier_id: str):
         """, (chantier_id,))
         
         conn.commit()
-        conn.close()
-        
+        close_db_connection(conn)
+
         return {
             "status": "✅ Verrous de planification supprimés",
             "chantier_id": chantier_id
@@ -860,7 +828,6 @@ def clear_forced_planning_lock(chantier_id: str):
 def sync_forced_planning_lock_put(lock_data: Dict[str, Any]):
     """Synchroniser les verrous de planification forcée depuis le client (méthode PUT)"""
     try:
-        from database_config import get_database_connection
         import json
         
         chantier_id = lock_data.get('chantier_id')
@@ -869,7 +836,7 @@ def sync_forced_planning_lock_put(lock_data: Dict[str, Any]):
         if not chantier_id:
             raise HTTPException(status_code=400, detail="chantier_id requis")
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Vérifier que le chantier existe
@@ -888,8 +855,8 @@ def sync_forced_planning_lock_put(lock_data: Dict[str, Any]):
         """, (lock_json, chantier_id))
         
         conn.commit()
-        conn.close()
-        
+        close_db_connection(conn)
+
         return {
             "status": "✅ Verrous synchronisés",
             "chantier_id": chantier_id,
@@ -905,7 +872,6 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
     """Synchroniser les verrous de planification forcée depuis le client (méthode POST)"""
     conn = None
     try:
-        from database_config import get_database_connection
         import json
         
         chantier_id = lock_data.get('chantier_id')
@@ -914,7 +880,7 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
         if not chantier_id:
             raise HTTPException(status_code=400, detail="chantier_id requis")
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Migration automatique : Vérifier si la colonne forced_planning_lock existe
@@ -973,7 +939,7 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
     finally:
         if conn:
             try:
-                conn.close()
+                close_db_connection(conn)
             except:
                 pass
 
@@ -985,8 +951,7 @@ def get_soldes(chantier_id: str):
     """Récupérer tous les soldes d'un chantier"""
     conn = None
     try:
-        from database_config import get_database_connection
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         cur.execute("""
@@ -1012,7 +977,7 @@ def get_soldes(chantier_id: str):
     finally:
         if conn:
             try:
-                conn.close()
+                close_db_connection(conn)
             except:
                 pass
 
@@ -1022,8 +987,7 @@ def update_soldes(solde_data: Dict[str, Any]):
     """Mettre à jour les soldes d'un chantier"""
     conn = None
     try:
-        from database_config import get_database_connection
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         chantier_id = solde_data.get('chantier_id')
@@ -1058,7 +1022,7 @@ def update_soldes(solde_data: Dict[str, Any]):
     finally:
         if conn:
             try:
-                conn.close()
+                close_db_connection(conn)
             except:
                 pass
 
@@ -1068,8 +1032,7 @@ def create_or_update_solde(solde_data: Dict[str, Any]):
     """Créer ou mettre à jour un solde spécifique"""
     conn = None
     try:
-        from database_config import get_database_connection
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         chantier_id = solde_data.get('chantier_id')
@@ -1110,7 +1073,7 @@ def create_or_update_solde(solde_data: Dict[str, Any]):
     finally:
         if conn:
             try:
-                conn.close()
+                close_db_connection(conn)
             except:
                 pass
 
@@ -1120,8 +1083,7 @@ def delete_all_soldes(chantier_id: str):
     """Supprimer tous les soldes d'un chantier"""
     conn = None
     try:
-        from database_config import get_database_connection
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         cur.execute("DELETE FROM soldes WHERE chantier_id = %s", (chantier_id,))
@@ -1142,7 +1104,7 @@ def delete_all_soldes(chantier_id: str):
     finally:
         if conn:
             try:
-                conn.close()
+                close_db_connection(conn)
             except:
                 pass
 
@@ -1152,8 +1114,7 @@ def delete_solde(chantier_id: str, semaine: str):
     """Supprimer un solde spécifique"""
     conn = None
     try:
-        from database_config import get_database_connection
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         cur.execute("""
@@ -1178,7 +1139,7 @@ def delete_solde(chantier_id: str, semaine: str):
     finally:
         if conn:
             try:
-                conn.close()
+                close_db_connection(conn)
             except:
                 pass
 
@@ -1188,8 +1149,7 @@ def delete_chantier(chantier_id: str):
     """Supprimer un chantier spécifique et toutes ses données associées"""
     conn = None
     try:
-        from database_config import get_database_connection
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Vérifier si le chantier existe
@@ -1234,7 +1194,7 @@ def delete_chantier(chantier_id: str):
     finally:
         if conn:
             try:
-                conn.close()
+                close_db_connection(conn)
             except:
                 pass
 
@@ -1244,8 +1204,7 @@ def delete_all_chantiers():
     """Supprimer tous les chantiers et toutes leurs données associées"""
     conn = None
     try:
-        from database_config import get_database_connection
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Compter les éléments avant suppression
@@ -1293,6 +1252,6 @@ def delete_all_chantiers():
     finally:
         if conn:
             try:
-                conn.close()
+                close_db_connection(conn)
             except:
                 pass
