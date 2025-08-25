@@ -4,7 +4,101 @@ from typing import Dict, Optional, Any
 import os
 import json
 
+# Variables globales pour le pool de connexions
+connection_pool = None
 
+def init_connection_pool():
+    """Initialiser le pool de connexions au startup"""
+    global connection_pool
+    database_url = os.environ.get('DATABASE_URL')
+    
+    if not database_url:
+        print("⚠️ DATABASE_URL non définie - pool désactivé")
+        return
+    
+    try:
+        # Essayer psycopg3 avec pool
+        import psycopg_pool
+        connection_pool = psycopg_pool.ConnectionPool(
+            database_url, 
+            min_size=2,        # Minimum 2 connexions
+            max_size=10,       # Maximum 10 connexions
+            max_idle=10,       # ✅ 10 secondes d'inactivité max (pas 300 !)
+            max_lifetime=300,  # ✅ 5 minutes de durée de vie max (pas 1800 !)
+            timeout=5          # ✅ 5 secondes max pour obtenir une connexion
+        )
+        print("✅ Pool de connexions psycopg3 initialisé (2-10 connexions)")
+    except ImportError:
+        try:
+            # Fallback sur psycopg2 avec pool simple
+            import psycopg2.pool
+            connection_pool = psycopg2.pool.SimpleConnectionPool(
+                2, 10, database_url
+            )
+            print("✅ Pool de connexions psycopg2 initialisé (2-10 connexions)")
+        except ImportError:
+            print("⚠️ Aucun module de pool disponible - pool désactivé")
+            connection_pool = None
+
+def get_db_connection():
+    """Obtenir une connexion du pool (ou créer une nouvelle si pas de pool)"""
+    global connection_pool
+    database_url = os.environ.get('DATABASE_URL')
+    
+    if not database_url:
+        raise Exception("DATABASE_URL non définie")
+    
+    # Si le pool est disponible, l'utiliser    ← ✅ Indenter correctement !
+    if connection_pool:
+        try:
+            if hasattr(connection_pool, 'getconn'):
+                # psycopg2 pool
+                return connection_pool.getconn()
+            else:
+                # psycopg3 pool - utilise connection() pas getconn()
+                return connection_pool.connection()  
+        except Exception as e:
+            print(f"⚠️ Erreur pool, fallback connexion directe: {e}")
+    
+    # Fallback : créer une connexion directe
+    try:
+        # Essayer psycopg3 d'abord
+        import psycopg
+        return psycopg.connect(database_url)
+    except ImportError:
+        try:
+            # Fallback sur psycopg2
+            import psycopg2
+            return psycopg2.connect(database_url)
+        except ImportError:
+            raise Exception("Aucun module psycopg disponible")
+        
+
+def close_db_connection(conn):
+    """Libérer une connexion vers le pool (ou la fermer si pas de pool)"""
+    global connection_pool
+    
+    if connection_pool:
+        try:
+            if hasattr(connection_pool, 'putconn'):
+                # psycopg2 pool
+                connection_pool.putconn(conn)
+                return
+            else:
+                # psycopg3 pool - la connexion se libère automatiquement
+                # Il suffit de fermer la connexion normalement
+                conn.close()
+                return
+        except Exception as e:
+            print(f"⚠️ Erreur lors de la libération vers le pool: {e}")
+    
+    # Fallback : fermer normalement
+    try:
+        conn.close()
+    except:
+        pass
+
+# Import conditionnel des routers pour éviter les erreurs de déploiement
 try:
     from beta_api_routes import router as beta_api_router
     BETA_API_AVAILABLE = True
@@ -20,25 +114,8 @@ except ImportError:
     GRILLE_SEMAINE_AVAILABLE = False
 
 
-# Configuration de la base de données
-def get_db_connection():
-    """Établit une connexion à la base PostgreSQL"""
-    database_url = os.environ.get('DATABASE_URL')
-    
-    if not database_url:
-        raise Exception("DATABASE_URL non définie")
-    
-    try:
-        # Essayer psycopg3 d'abord
-        import psycopg
-        return psycopg.connect(database_url)
-    except ImportError:
-        try:
-            # Fallback sur psycopg2
-            import psycopg2
-            return psycopg2.connect(database_url)
-        except ImportError:
-            raise Exception("Aucun module psycopg disponible")
+
+
 
 def ensure_etiquettes_grille_tables(conn):
     """S'assurer que les tables pour les étiquettes de grille existent"""
@@ -189,7 +266,7 @@ def ensure_chantiers_tables(conn):
         $$ language 'plpgsql';
     """)
     
-    # Triggers pour mettre à jour updated_at
+    # Triggers pour mettre à jour updated_at --> Preparateurs/Chantiers/Horaires préparateurs
     cur.execute("""
         DROP TRIGGER IF EXISTS update_preparateurs_updated_at ON preparateurs;
         CREATE TRIGGER update_preparateurs_updated_at 
@@ -214,11 +291,37 @@ def ensure_chantiers_tables(conn):
     conn.commit()
 
 
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Gestion du cycle de vie de l'application"""
+    # 🚀 STARTUP
+    init_connection_pool()
+    print("🚀 Application démarrée avec pool de connexions")
+    
+    yield  # ← App tourne ici (toutes tes routes sync)
+    
+    # 🛑 SHUTDOWN
+    global connection_pool
+    if connection_pool:
+        try:
+            if hasattr(connection_pool, 'closeall'):
+                connection_pool.closeall()
+            elif hasattr(connection_pool, 'close'):
+                connection_pool.close()
+            print("✅ Pool de connexions fermé proprement")
+        except Exception as e:
+            print(f"⚠️ Erreur lors de la fermeture du pool: {e}")
+
 app = FastAPI(
     title="API de Planification",
     description="API pour la gestion des chantiers et des étiquettes de planification",
-    version="2.0.0"
+    version="2.0.0",
+    lifespan=lifespan  # ← Remplace les @app.on_event()
 )
+
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -227,7 +330,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inclure les routers
+# Inclure les routers seulement s'ils sont disponibles
 if BETA_API_AVAILABLE and beta_api_router:
     app.include_router(beta_api_router, prefix="", tags=["Beta-API"])
 
@@ -237,19 +340,50 @@ if GRILLE_SEMAINE_AVAILABLE and grille_semaine_router:
 @app.get("/")
 def read_root():
     """Point d'entrée de l'API"""
+    modules_status = {
+        "beta_api": "✅ Disponible" if BETA_API_AVAILABLE else "❌ Non disponible",
+        "grille_semaine": "✅ Disponible" if GRILLE_SEMAINE_AVAILABLE else "❌ Non disponible"
+    }
+    
+    pool_status = "✅ Actif" if connection_pool else "❌ Désactivé"
+    
     return {
         "message": "API de Planification",
         "version": "2.0.0",
+        "pool_connexions": pool_status,
+        "modules": modules_status,
         "endpoints": {
-            "beta_api": "Gestion des chantiers et préparateurs",
-            "grille_semaine": "Gestion des étiquettes et horaires (à venir)"
+            "beta_api": "Gestion des chantiers et préparateurs" if BETA_API_AVAILABLE else "Module non chargé",
+            "grille_semaine": "Gestion des étiquettes et horaires" if GRILLE_SEMAINE_AVAILABLE else "Module non chargé"
         }
     }
 
 @app.get("/health")
 def health_check():
     """Vérification de santé de l'API"""
-    return {"status": "healthy", "service": "planning-api"}
+    pool_info = {}
+    if connection_pool:
+        try:
+            if hasattr(connection_pool, 'get_stats'):
+                # psycopg3 pool stats
+                stats = connection_pool.get_stats()
+                pool_info = {
+                    "pool_size": stats.pool_size,
+                    "pool_available": stats.pool_available,
+                    "requests_waiting": stats.requests_waiting
+                }
+            else:
+                # psycopg2 pool - info basique
+                pool_info = {"pool": "active", "type": "psycopg2"}
+        except Exception as e:
+            pool_info = {"pool_error": str(e)}
+    
+    return {
+        "status": "healthy", 
+        "service": "planning-api",
+        "pool": pool_info
+    }
+
 
 
 
@@ -262,9 +396,9 @@ def reset_complete_database():
     """DANGER: Vider complètement toute la base de données - À utiliser avec précaution!"""
     conn = None
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Compter les enregistrements avant suppression
@@ -371,19 +505,16 @@ def reset_complete_database():
         raise HTTPException(status_code=500, detail=f"Erreur lors du reset de la base: {str(e)}")
     finally:
         if conn:
-            try:
-                conn.close()
-            except:
-                pass
+            close_db_connection(conn)
 
 @app.delete("/admin/drop-all-tables")
 def drop_all_tables():
     """DANGER EXTRÊME: Supprimer complètement toutes les tables - Structure ET données!"""
     conn = None
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Lister toutes les tables de l'application
@@ -437,19 +568,16 @@ def drop_all_tables():
         raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression des tables: {str(e)}")
     finally:
         if conn:
-            try:
-                conn.close()
-            except:
-                pass
+            close_db_connection(conn)
 
 @app.post("/admin/create-all-tables")
 def create_all_tables():
     """Créer toutes les tables de l'application"""
     conn = None
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        
+        conn = get_db_connection()
         
         # Créer les tables des chantiers et préparateurs
         ensure_chantiers_tables(conn)
@@ -498,11 +626,10 @@ def create_all_tables():
         raise HTTPException(status_code=500, detail=f"Erreur création des tables: {str(e)}")
     finally:
         if conn:
-            try:
-                conn.close()
-            except:
-                pass
+           close_db_connection(conn)
 
+
+# Render → Uvicorn → FastAPI
 
 if __name__ == "__main__":
     import uvicorn
