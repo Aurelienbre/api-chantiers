@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from typing import Dict, Optional, Any
 import os
 import json
+from main import get_db_connection, close_db_connection
 
 
 # Créer le router pour les routes Grille Semaine
@@ -19,26 +20,6 @@ router = APIRouter(
     tags=["Grille Semaine Étiquettes"],
     responses={404: {"description": "Not found"}},
 )
-
-
-def get_db_connection():
-    """Établit une connexion à la base PostgreSQL"""
-    database_url = os.environ.get('DATABASE_URL')
-    
-    if not database_url:
-        raise Exception("DATABASE_URL non définie")
-    
-    try:
-        # Essayer psycopg3 d'abord
-        import psycopg
-        return psycopg.connect(database_url)
-    except ImportError:
-        try:
-            # Fallback sur psycopg2
-            import psycopg2
-            return psycopg2.connect(database_url)
-        except ImportError:
-            raise Exception("Aucun module psycopg disponible")
 
 
 def ensure_etiquettes_grille_tables(conn):
@@ -92,9 +73,8 @@ def get_all_horaires():
     """Récupérer tous les horaires de tous les préparateurs"""
     conn = None
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Vérifier si la table horaires existe
@@ -177,16 +157,15 @@ def get_all_horaires():
         raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération des horaires: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.get("/horaires/{preparateur_nom}")
 def get_horaires_preparateur(preparateur_nom: str):
     """Récupérer les horaires d'un préparateur spécifique"""
     conn = None
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         cur.execute("""
@@ -226,16 +205,15 @@ def get_horaires_preparateur(preparateur_nom: str):
         raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération des horaires: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.put("/horaires/{preparateur_nom}")
 def update_horaires_preparateur(preparateur_nom: str, horaires_data: Dict[str, Any]):
     """Mettre à jour les horaires d'un préparateur"""
     conn = None
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Supprimer tous les horaires existants pour ce préparateur
@@ -265,16 +243,15 @@ def update_horaires_preparateur(preparateur_nom: str, horaires_data: Dict[str, A
         raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour des horaires: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.post("/horaires")
 def sync_all_horaires(horaires_data: Dict[str, Any]):
     """Synchroniser tous les horaires des préparateurs"""
     conn = None
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Vérifier/créer la table si nécessaire
@@ -341,16 +318,15 @@ def sync_all_horaires(horaires_data: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"Erreur lors de la synchronisation: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.delete("/horaires/{preparateur_nom}")
 def delete_horaires_preparateur(preparateur_nom: str):
     """Supprimer tous les horaires d'un préparateur"""
     conn = None
     try:
-        from database_config import get_database_connection
         
-        conn = get_database_connection()
+        conn = get_db_connection()
         cur = conn.cursor()
         
         # Compter les horaires avant suppression
@@ -374,7 +350,7 @@ def delete_horaires_preparateur(preparateur_nom: str):
         raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 
 
@@ -440,7 +416,7 @@ def get_all_etiquettes_grille():
         raise HTTPException(status_code=500, detail=f"Erreur lors de la récupération: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.post("/etiquettes-grille")
 def create_etiquette_grille(etiquette_data: Dict[str, Any]):
@@ -535,7 +511,7 @@ def create_etiquette_grille(etiquette_data: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"Erreur lors de la création: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.put("/etiquettes-grille/{etiquette_id}")
 def update_etiquette_grille(etiquette_id: int, etiquette_data: Dict[str, Any]):
@@ -606,7 +582,7 @@ def update_etiquette_grille(etiquette_id: int, etiquette_data: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.put("/etiquettes-grille/{etiquette_id}/horaires")
 def update_etiquette_horaires(etiquette_id: int, horaires_data: Dict[str, Any]):
@@ -672,7 +648,7 @@ def update_etiquette_horaires(etiquette_id: int, horaires_data: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour des horaires: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.post("/etiquettes-grille/{etiquette_id}/planifications")
 def add_planification_to_etiquette(etiquette_id: int, planification_data: dict):
@@ -739,7 +715,7 @@ def add_planification_to_etiquette(etiquette_id: int, planification_data: dict):
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'ajout de la planification: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.put("/etiquettes-grille/{etiquette_id}/planifications/{planification_id}")
 def update_planification_specifique(etiquette_id: int, planification_id: int, update_data: Dict[str, Any]):
@@ -881,7 +857,7 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
         raise HTTPException(status_code=500, detail=f"Erreur lors de la mise à jour de la planification: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.post("/etiquettes-grille/{etiquette_id}/planifications/{planification_id}/preparateurs")
 def add_preparateur_to_planification(etiquette_id: int, planification_id: int, preparateur_data: Dict[str, Any]):
@@ -975,7 +951,7 @@ def add_preparateur_to_planification(etiquette_id: int, planification_id: int, p
         raise HTTPException(status_code=500, detail=f"Erreur lors de l'ajout du préparateur: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.delete("/etiquettes-grille/{etiquette_id}")
 def delete_etiquette_grille(etiquette_id: int):
@@ -1025,7 +1001,7 @@ def delete_etiquette_grille(etiquette_id: int):
         raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.delete("/etiquettes-grille/{etiquette_id}/planifications/{planification_id}")
 def delete_planification_etiquette(etiquette_id: int, planification_id: int):
@@ -1111,7 +1087,7 @@ def delete_planification_etiquette(etiquette_id: int, planification_id: int):
         raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression de la planification: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
 
 @router.delete("/etiquettes-grille/{etiquette_id}/planifications/{planification_id}/preparateurs/{preparateur_nom}")
 def remove_preparateur_from_planification(etiquette_id: int, planification_id: int, preparateur_nom: str):
@@ -1211,4 +1187,4 @@ def remove_preparateur_from_planification(etiquette_id: int, planification_id: i
         raise HTTPException(status_code=500, detail=f"Erreur lors du retrait du préparateur: {str(e)}")
     finally:
         if conn:
-            conn.close()
+            close_db_connection(conn)
