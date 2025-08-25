@@ -51,7 +51,7 @@ def init_connection_pool():
             connection_pool = None
 
 def get_db_connection():
-    """Obtenir une connexion du pool avec tracking de l'origine"""
+    """Obtenir une connexion du pool (rétrocompatible)"""
     global connection_pool
     database_url = os.environ.get('DATABASE_URL')
     
@@ -64,11 +64,15 @@ def get_db_connection():
             if hasattr(connection_pool, 'getconn'):
                 # psycopg2 pool
                 conn = connection_pool.getconn()
-                return conn, 'psycopg2_pool'
+                # Ajouter metadata pour close_db_connection
+                conn._pool_type = 'psycopg2_pool'
+                return conn
             else:
-                # psycopg3 pool - utilise connection() pas getconn()
+                # psycopg3 pool
                 conn = connection_pool.connection()
-                return conn, 'psycopg3_pool'
+                # Ajouter metadata pour close_db_connection  
+                conn._pool_type = 'psycopg3_pool'
+                return conn
         except Exception as e:
             print(f"⚠️ Erreur pool, fallback connexion directe: {e}")
     
@@ -77,27 +81,28 @@ def get_db_connection():
         # Essayer psycopg3 d'abord
         import psycopg
         conn = psycopg.connect(database_url)
-        return conn, 'direct_psycopg3'
+        conn._pool_type = 'direct_psycopg3'
+        return conn
     except ImportError:
         try:
             # Fallback sur psycopg2
             import psycopg2
             conn = psycopg2.connect(database_url)
-            return conn, 'direct_psycopg2'
+            conn._pool_type = 'direct_psycopg2'
+            return conn
         except ImportError:
             raise Exception("Aucun module psycopg disponible")
-        
 
-def close_db_connection(conn_info):
-    """Libérer une connexion selon son type"""
-    if isinstance(conn_info, tuple):
-        conn, conn_type = conn_info
-    else:
-        # Rétrocompatibilité
-        conn = conn_info
-        conn_type = 'unknown'
-    
+
+def close_db_connection(conn):
+    """Libérer une connexion selon son type (rétrocompatible)"""
+    if not conn:
+        return
+        
     global connection_pool
+    
+    # Récupérer le type depuis les métadonnées
+    conn_type = getattr(conn, '_pool_type', 'unknown')
     
     try:
         if conn_type == 'psycopg2_pool' and connection_pool:
@@ -106,7 +111,7 @@ def close_db_connection(conn_info):
             
         elif conn_type == 'psycopg3_pool':
             # psycopg3 pool - NE PAS FERMER ! Le pool gère automatiquement
-            # La connexion retourne au pool automatiquement
+            # La connexion retourne au pool automatiquement grâce au context manager
             pass
             
         else:
