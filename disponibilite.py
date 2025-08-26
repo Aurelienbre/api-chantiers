@@ -3,7 +3,7 @@ Routes pour la gestion des disponibilités calculées automatiquement
 
 Ce module contient toutes les routes relatives au nouveau système de disponibilités :
 - Calcul automatique basé sur horaires - étiquettes planifiées
-- Migration du format des semaines vers le standard YYYY-WW
+- Migration du format des semaines vers le standard YYYY-WXX
 - Comparaison ancien/nouveau système
 - Sauvegarde des disponibilités calculées
 """
@@ -27,21 +27,25 @@ router = APIRouter(
 # ========================================================================
 
 def valider_format_semaine(semaine: str) -> bool:
-    """Valider le format de semaine YYYY-WW"""
-    return bool(re.match(r'^\d{4}-\d{2}$', semaine))
+    """Valider le format de semaine YYYY-WXX (standard ISO)"""
+    return bool(re.match(r'^\d{4}-W\d{2}$', semaine))
 
 def semaine_courante() -> str:
-    """Obtenir la semaine courante au format YYYY-WW"""
+    """Obtenir la semaine courante au format YYYY-WXX (standard ISO)"""
     today = datetime.now()
     year, week, _ = today.isocalendar()
-    return f"{year}-{week:02d}"
+    return f"{year}-W{week:02d}"
 
 def dates_de_semaine(semaine: str) -> dict:
-    """Convertir une semaine YYYY-WW en dates"""
+    """Convertir une semaine YYYY-WXX en dates"""
     if not valider_format_semaine(semaine):
-        raise ValueError(f"Format de semaine invalide: {semaine}. Utilisez YYYY-WW (ex: 2025-35)")
+        raise ValueError(f"Format de semaine invalide: {semaine}. Utilisez YYYY-WXX (ex: 2025-W35)")
     
-    year, week_num = map(int, semaine.split('-'))
+    # Extraire l'année et le numéro de semaine du format ISO
+    year_str, week_part = semaine.split('-')
+    year = int(year_str)
+    week_num = int(week_part[1:])  # Enlever le 'W' et convertir
+    
     jan4 = datetime(year, 1, 4)
     week_start = jan4 + timedelta(days=(week_num - 1) * 7 - jan4.weekday())
     
@@ -233,7 +237,7 @@ def get_semaine_courante():
     current_week = semaine_courante()
     return {
         "semaine": current_week,
-        "format": "YYYY-WW (Standard ISO)",
+        "format": "YYYY-WXX (Standard ISO)",
         "dates": dates_de_semaine(current_week)
     }
 
@@ -262,7 +266,7 @@ def get_semaines_disponibles():
         semaines = []
         for row in cur.fetchall():
             annee, semaine_num, nb_planifications = row
-            semaine_format = f"{int(annee)}-{int(semaine_num):02d}"
+            semaine_format = f"{int(annee)}-W{int(semaine_num):02d}"
             try:
                 dates_info = dates_de_semaine(semaine_format)
                 semaines.append({
@@ -309,7 +313,7 @@ def get_disponibilites_calculees_preparateur(preparateur_nom: str, semaine: Opti
         
         # Vérifier le format de la semaine
         if not valider_format_semaine(semaine):
-            raise HTTPException(status_code=400, detail="Format de semaine invalide. Utilisez YYYY-WW (ex: 2025-35)")
+            raise HTTPException(status_code=400, detail="Format de semaine invalide. Utilisez YYYY-WXX (ex: 2025-W35)")
         
         # Utiliser la fonction de calcul pure
         resultat = calculer_disponibilites_preparateur(preparateur_nom, semaine, conn)
@@ -341,8 +345,8 @@ def get_disponibilites_calculees_tous_preparateurs(semaine: Optional[str] = None
             semaine = semaine_courante()
         
         if not valider_format_semaine(semaine):
-            raise HTTPException(status_code=400, detail="Format de semaine invalide. Utilisez YYYY-WW (ex: 2025-35)")
-        
+            raise HTTPException(status_code=400, detail="Format de semaine invalide. Utilisez YYYY-WXX (ex: 2025-W35)")
+
         # Récupérer tous les préparateurs ayant des horaires
         cur = conn.cursor()
         cur.execute("""
@@ -517,7 +521,7 @@ def recalculer_et_sauvegarder_disponibilites(
             semaine = semaine_courante()
         
         if not valider_format_semaine(semaine):
-            raise HTTPException(status_code=400, detail="Format de semaine invalide. Utilisez YYYY-WW (ex: 2025-35)")
+            raise HTTPException(status_code=400, detail="Format de semaine invalide. Utilisez YYYY-WXX (ex: 2025-W35)")
         
         # Vérifier/créer la table disponibilites si nécessaire
         cur.execute("""
@@ -586,7 +590,7 @@ def recalculer_et_sauvegarder_disponibilites(
         
         return {
             "status": "✅ Disponibilités recalculées et sauvegardées",
-            "format_semaine": "Standard YYYY-WW",
+            "format_semaine": "Standard YYYY-WXX",
             "semaine": semaine,
             "timestamp": datetime.now().isoformat(),
             "nb_preparateurs": len(preparateurs),
@@ -625,7 +629,7 @@ def comparer_anciennes_nouvelles_disponibilites(semaine: str):
         cur = conn.cursor()
         
         if not valider_format_semaine(semaine):
-            raise HTTPException(status_code=400, detail="Format de semaine invalide")
+            raise HTTPException(status_code=400, detail="Format de semaine invalide. Utilisez YYYY-WXX (ex: 2025-W35)")
         
         # Récupérer les anciennes disponibilités sauvegardées
         cur.execute("""
@@ -711,7 +715,7 @@ def get_disponibilites_sauvegardees(semaine: str):
         cur = conn.cursor()
         
         if not valider_format_semaine(semaine):
-            raise HTTPException(status_code=400, detail="Format de semaine invalide")
+            raise HTTPException(status_code=400, detail="Format de semaine invalide. Utilisez YYYY-WXX (ex: 2025-W35)")
         
         cur.execute("""
             SELECT preparateur_nom, minutes, "updatedAt", created_at
