@@ -59,27 +59,29 @@ def get_preparateurs():
 
 @router.post("/preparateurs")
 def sync_preparateurs(preparateurs_data: Dict[str, Any]):
-    """Synchroniser les préparateurs avec PostgreSQL"""
+    """Synchroniser les préparateurs avec PostgreSQL (optimisé)"""
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         
         preparateurs = preparateurs_data.get('preparateurs', {})
-        synced_count = 0
         
-        # Insérer ou mettre à jour chaque préparateur
-        for nom, nni in preparateurs.items():
-            cur.execute("""
-                INSERT INTO preparateurs (nom, nni) 
-                VALUES (%s, %s) 
-                ON CONFLICT (nom) DO UPDATE SET nni = EXCLUDED.nni
-            """, (nom, nni))
-            synced_count += 1
+        if not preparateurs:
+            return {"status": "⚠️ Aucun préparateur à synchroniser", "count": 0}
+        
+        # ✅ OPTIMISATION : Bulk insert avec executemany()
+        preparateurs_data_list = [(nom, nni) for nom, nni in preparateurs.items()]
+        
+        cur.executemany("""
+            INSERT INTO preparateurs (nom, nni) 
+            VALUES (%s, %s) 
+            ON CONFLICT (nom) DO UPDATE SET nni = EXCLUDED.nni
+        """, preparateurs_data_list)
         
         conn.commit()
 
-        return {"status": "✅ Préparateurs synchronisés", "count": synced_count}
+        return {"status": "✅ Préparateurs synchronisés", "count": len(preparateurs_data_list)}
         
     except Exception as e:
         if conn:
@@ -338,65 +340,69 @@ def create_chantier(chantier: Dict[str, Any]):
 
 @router.put("/chantiers/{chantier_id}")
 def update_chantier(chantier_id: str, chantier: Dict[str, Any]):
-    """Mettre à jour un chantier existant"""
-    conn = None  # ← AJOUTER
-
+    """Mettre à jour un chantier avec requête sécurisée optimisée"""
+    conn = None
     try:
-        
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Construire la requête dynamiquement selon les champs fournis
+        # ✅ OPTIMISATION : Mapping des champs sécurisé
+        field_mapping = {
+            'label': 'label',
+            'status': 'status', 
+            'prepTime': 'prepTime',
+            'endDate': 'endDate',
+            'preparateur': 'preparateur_nom',
+            'ChargeRestante': 'ChargeRestante'
+        }
+        
+        # Construire la requête sécurisée
         updates = []
         params = []
         
-        if 'label' in chantier and chantier['label'] is not None:
-            updates.append("label = %s")
-            params.append(chantier['label'])
-        if 'status' in chantier and chantier['status'] is not None:
-            updates.append("status = %s")
-            params.append(chantier['status'])
-        if 'prepTime' in chantier and chantier['prepTime'] is not None:
-            updates.append("prepTime = %s")
-            params.append(chantier['prepTime'])
-        if 'endDate' in chantier and chantier['endDate'] is not None:
-            updates.append("endDate = %s")
-            params.append(chantier['endDate'])
-        if 'preparateur' in chantier and chantier['preparateur'] is not None:
-            updates.append("preparateur_nom = %s")
-            params.append(chantier['preparateur'])
-        if 'ChargeRestante' in chantier and chantier['ChargeRestante'] is not None:
-            updates.append("ChargeRestante = %s")
-            params.append(chantier['ChargeRestante'])
+        for field_name, db_column in field_mapping.items():
+            if field_name in chantier and chantier[field_name] is not None:
+                updates.append(f"{db_column} = %s")
+                params.append(chantier[field_name])
         
         if not updates:
             return {"status": "⚠️ Aucune modification fournie"}
         
+        # ✅ Requête avec vérification d'existence intégrée
         params.append(chantier_id)
-        query = f"UPDATE chantiers SET {', '.join(updates)} WHERE id = %s"
+        query = f"""
+            UPDATE chantiers 
+            SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            RETURNING id, label, status
+        """
         
         cur.execute(query, params)
+        result = cur.fetchone()
         
-        if cur.rowcount == 0:
+        if not result:
             raise HTTPException(status_code=404, detail="Chantier non trouvé")
         
         conn.commit()
-        return {"status": "✅ Chantier mis à jour", "id": chantier_id}
         
-    except HTTPException:  # ← AJOUTER
+        return {
+            "status": "✅ Chantier mis à jour", 
+            "id": result[0],
+            "label": result[1],
+            "status": result[2]
+        }
+        
+    except HTTPException:
         if conn:
             conn.rollback()
         raise
-    except Exception as e:  # ← AJOUTER le rollback
+    except Exception as e:
         if conn:
             conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
-    finally:  # ← AJOUTER
+    finally:
         if conn:
-            try:
-                close_db_connection(conn)
-            except:
-                pass
+            close_db_connection(conn)
 
 
 # Disponibilité et planification
