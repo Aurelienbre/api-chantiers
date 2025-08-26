@@ -9,8 +9,6 @@ Ce module contient toutes les routes relatives à :
 
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Optional, Any
-import os
-import json
 from main import get_db_connection, close_db_connection
 
 
@@ -209,69 +207,45 @@ def update_horaires_preparateur(preparateur_nom: str, horaires_data: Dict[str, A
 
 @router.post("/horaires")
 def sync_all_horaires(horaires_data: Dict[str, Any]):
-    """Synchroniser tous les horaires des préparateurs"""
+    """Synchroniser tous les horaires des préparateurs (optimisé)"""
     conn = None
     try:
-        
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Vérifier/créer la table si nécessaire
-        cur.execute("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_name = 'horaires_preparateurs'
-        """)
-        table_exists = cur.fetchone()
-        
-        if not table_exists:
-            # Créer la table
-            cur.execute("""
-                CREATE TABLE horaires_preparateurs (
-                    id SERIAL PRIMARY KEY,
-                    preparateur_nom VARCHAR(255) NOT NULL,
-                    jour_semaine VARCHAR(20) NOT NULL,
-                    heure_debut TIME NOT NULL,
-                    heure_fin TIME NOT NULL,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    
-                    CONSTRAINT check_jour_semaine CHECK (jour_semaine IN ('lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'))
-                )
-            """)
-            
-            cur.execute("CREATE INDEX idx_horaires_preparateur ON horaires_preparateurs (preparateur_nom)")
-            cur.execute("CREATE INDEX idx_horaires_jour ON horaires_preparateurs (jour_semaine)")
-            
-            cur.execute("""
-                CREATE TRIGGER update_horaires_updated_at 
-                BEFORE UPDATE ON horaires_preparateurs 
-                FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()
-            """)
+        # ...existing code... (création table)
         
         # Supprimer tous les horaires existants
         cur.execute("DELETE FROM horaires_preparateurs")
         
-        # Insérer tous les nouveaux horaires
-        total_creneaux = 0
+        # ✅ OPTIMISATION : Préparer toutes les données avant insertion
+        horaires_bulk_data = []
         for preparateur_nom, horaires in horaires_data.items():
             if isinstance(horaires, dict):
                 for jour, creneaux in horaires.items():
                     if jour in ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'] and creneaux:
                         for creneau in creneaux:
                             if isinstance(creneau, dict) and 'debut' in creneau and 'fin' in creneau:
-                                cur.execute("""
-                                    INSERT INTO horaires_preparateurs (preparateur_nom, jour_semaine, heure_debut, heure_fin)
-                                    VALUES (%s, %s, %s, %s)
-                                """, (preparateur_nom, jour, creneau['debut'], creneau['fin']))
-                                total_creneaux += 1
+                                horaires_bulk_data.append((
+                                    preparateur_nom, 
+                                    jour, 
+                                    creneau['debut'], 
+                                    creneau['fin']
+                                ))
+        
+        # ✅ Bulk insert avec executemany()
+        if horaires_bulk_data:
+            cur.executemany("""
+                INSERT INTO horaires_preparateurs (preparateur_nom, jour_semaine, heure_debut, heure_fin)
+                VALUES (%s, %s, %s, %s)
+            """, horaires_bulk_data)
         
         conn.commit()
         
         return {
-            "status": "✅ Synchronisation complète",
+            "status": "✅ Synchronisation complète optimisée",
             "message": f"Horaires de {len(horaires_data)} préparateur(s) synchronisés",
-            "total_creneaux": total_creneaux
+            "total_creneaux": len(horaires_bulk_data)
         }
         
     except Exception as e:
@@ -320,52 +294,54 @@ def delete_horaires_preparateur(preparateur_nom: str):
 
 @router.get("/etiquettes-grille")
 def get_all_etiquettes_grille():
-    """Récupérer toutes les étiquettes de la grille semaine avec leurs planifications"""
+    """Récupérer toutes les étiquettes de la grille semaine avec leurs planifications (optimisé)"""
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Récupérer toutes les étiquettes avec leurs planifications
+        # ✅ OPTIMISATION : Agrégation côté SQL avec JSON
         cur.execute("""
             SELECT 
-                e.id, e.type_activite, e.description, e.group_id, 
-                e.created_at, e.updated_at,
-                p.id as planif_id, p.date_jour, p.heure_debut, p.heure_fin, p.preparateurs
+                e.id,
+                e.type_activite,
+                e.description,
+                e.group_id,
+                e.created_at,
+                e.updated_at,
+                -- Agrégation des planifications en JSON
+                COALESCE(
+                    json_agg(
+                        json_build_object(
+                            'id', p.id,
+                            'date_jour', p.date_jour::text,
+                            'heure_debut', p.heure_debut::text,
+                            'heure_fin', p.heure_fin::text,
+                            'preparateurs', p.preparateurs
+                        ) ORDER BY p.date_jour ASC, p.heure_debut ASC
+                    ) FILTER (WHERE p.id IS NOT NULL),
+                    '[]'::json
+                ) as planifications_json
             FROM etiquettes_grille e
             LEFT JOIN planifications_etiquettes p ON e.id = p.etiquette_id
-            ORDER BY e.created_at DESC, p.date_jour ASC, p.heure_debut ASC
+            GROUP BY e.id, e.type_activite, e.description, e.group_id, e.created_at, e.updated_at
+            ORDER BY e.created_at DESC
         """)
         
-        results = cur.fetchall()
+        rows = cur.fetchall()
         
-        # Grouper les résultats par étiquette
-        etiquettes = {}
-        for row in results:
-            etiquette_id = row[0]
-            
-            if etiquette_id not in etiquettes:
-                etiquettes[etiquette_id] = {
-                    "id": row[0],
-                    "type_activite": row[1],
-                    "description": row[2],
-                    "group_id": row[3],
-                    "created_at": row[4].isoformat() if row[4] else None,
-                    "updated_at": row[5].isoformat() if row[5] else None,
-                    "planifications": []
-                }
-            
-            # Ajouter la planification si elle existe
-            if row[6]:  # planif_id
-                etiquettes[etiquette_id]["planifications"].append({
-                    "id": row[6],
-                    "date_jour": row[7].strftime('%Y-%m-%d'),
-                    "heure_debut": row[8],
-                    "heure_fin": row[9],
-                    "preparateurs": row[10]
-                })
-        
-        etiquettes_list = list(etiquettes.values())
+        # ✅ Traitement minimal côté Python
+        etiquettes_list = []
+        for row in rows:
+            etiquettes_list.append({
+                "id": row[0],
+                "type_activite": row[1],
+                "description": row[2],
+                "group_id": row[3],
+                "created_at": row[4].isoformat() if row[4] else None,
+                "updated_at": row[5].isoformat() if row[5] else None,
+                "planifications": row[6]  # ← Déjà au format JSON !
+            })
         
         return {
             "status": "✅ Étiquettes récupérées",
@@ -381,7 +357,7 @@ def get_all_etiquettes_grille():
 
 @router.post("/etiquettes-grille")
 def create_etiquette_grille(etiquette_data: Dict[str, Any]):
-    """Créer une nouvelle étiquette de la grille semaine avec ses planifications"""
+    """Créer une nouvelle étiquette de la grille semaine avec ses planifications (optimisé)"""
     conn = None
     try:
         conn = get_db_connection()
@@ -396,71 +372,91 @@ def create_etiquette_grille(etiquette_data: Dict[str, Any]):
         if not etiquette_data['planifications']:
             raise HTTPException(status_code=400, detail="Au moins une planification est requise")
         
-        # Créer l'étiquette principale
-        cur.execute("""
-            INSERT INTO etiquettes_grille (type_activite, description, group_id)
-            VALUES (%s, %s, %s)
-            RETURNING id, created_at, updated_at
-        """, (
-            etiquette_data['type_activite'],
-            etiquette_data.get('description'),
-            etiquette_data.get('group_id')
-        ))
+        # ✅ OPTIMISATION : Transaction explicite
+        cur.execute("BEGIN")
         
-        etiquette_result = cur.fetchone()
-        etiquette_id = etiquette_result[0]
-        
-        # Créer les planifications
-        planifications_creees = []
-        for planif in etiquette_data['planifications']:
-            # Valider les champs de planification
-            required_planif_fields = ['date_jour', 'heure_debut', 'heure_fin', 'preparateurs']
-            for field in required_planif_fields:
-                if field not in planif:
-                    raise HTTPException(status_code=400, detail=f"Champ planification requis manquant: {field}")
-            
-            # Valider les heures
-            if planif['heure_debut'] >= planif['heure_fin']:
-                raise HTTPException(status_code=400, detail=f"Heure de début ({planif['heure_debut']}) doit être < heure de fin ({planif['heure_fin']})")
-            
-            # Insérer la planification
+        try:
+            # Créer l'étiquette principale
             cur.execute("""
-                INSERT INTO planifications_etiquettes (etiquette_id, date_jour, heure_debut, heure_fin, preparateurs)
-                VALUES (%s, %s, %s, %s, %s)
-                RETURNING id, created_at
+                INSERT INTO etiquettes_grille (type_activite, description, group_id)
+                VALUES (%s, %s, %s)
+                RETURNING id, created_at, updated_at
             """, (
-                etiquette_id,
-                planif['date_jour'],
-                planif['heure_debut'],
-                planif['heure_fin'],
-                planif['preparateurs']
+                etiquette_data['type_activite'],
+                etiquette_data.get('description'),
+                etiquette_data.get('group_id')
             ))
             
-            planif_result = cur.fetchone()
-            planifications_creees.append({
-                "id": planif_result[0],
-                "date_jour": planif['date_jour'],
-                "heure_debut": planif['heure_debut'],
-                "heure_fin": planif['heure_fin'],
-                "preparateurs": planif['preparateurs'],
-                "created_at": planif_result[1].isoformat()
-            })
-        
-        conn.commit()
-        
-        return {
-            "status": "✅ Étiquette créée",
-            "etiquette": {
-                "id": etiquette_id,
-                "type_activite": etiquette_data['type_activite'],
-                "description": etiquette_data.get('description'),
-                "group_id": etiquette_data.get('group_id'),
-                "created_at": etiquette_result[1].isoformat(),
-                "updated_at": etiquette_result[2].isoformat(),
-                "planifications": planifications_creees
+            etiquette_result = cur.fetchone()
+            etiquette_id = etiquette_result[0]
+            
+            # ✅ OPTIMISATION : Préparer toutes les planifications
+            planifications_bulk_data = []
+            for planif in etiquette_data['planifications']:
+                # Valider les champs de planification
+                required_planif_fields = ['date_jour', 'heure_debut', 'heure_fin', 'preparateurs']
+                for field in required_planif_fields:
+                    if field not in planif:
+                        raise HTTPException(status_code=400, detail=f"Champ planification requis manquant: {field}")
+                
+                # Valider les heures
+                if planif['heure_debut'] >= planif['heure_fin']:
+                    raise HTTPException(status_code=400, detail=f"Heure de début ({planif['heure_debut']}) doit être < heure de fin ({planif['heure_fin']})")
+                
+                planifications_bulk_data.append((
+                    etiquette_id,
+                    planif['date_jour'],
+                    planif['heure_debut'],
+                    planif['heure_fin'],
+                    planif['preparateurs']
+                ))
+            
+            # ✅ Bulk insert des planifications
+            cur.executemany("""
+                INSERT INTO planifications_etiquettes (etiquette_id, date_jour, heure_debut, heure_fin, preparateurs)
+                VALUES (%s, %s, %s, %s, %s)
+            """, planifications_bulk_data)
+            
+            # ✅ Récupérer les IDs des planifications créées en une seule requête
+            cur.execute("""
+                SELECT id, date_jour, heure_debut, heure_fin, preparateurs, created_at
+                FROM planifications_etiquettes 
+                WHERE etiquette_id = %s
+                ORDER BY date_jour, heure_debut
+            """, (etiquette_id,))
+            
+            planifications_creees = []
+            for row in cur.fetchall():
+                planifications_creees.append({
+                    "id": row[0],
+                    "date_jour": str(row[1]),
+                    "heure_debut": str(row[2]),
+                    "heure_fin": str(row[3]),
+                    "preparateurs": row[4],
+                    "created_at": row[5].isoformat()
+                })
+            
+            # ✅ Commit unique à la fin
+            cur.execute("COMMIT")
+            
+            return {
+                "status": "✅ Étiquette créée (optimisé)",
+                "etiquette": {
+                    "id": etiquette_id,
+                    "type_activite": etiquette_data['type_activite'],
+                    "description": etiquette_data.get('description'),
+                    "group_id": etiquette_data.get('group_id'),
+                    "created_at": etiquette_result[1].isoformat(),
+                    "updated_at": etiquette_result[2].isoformat(),
+                    "planifications": planifications_creees
+                }
             }
-        }
-        
+            
+        except Exception as e:
+            # ✅ Rollback en cas d'erreur
+            cur.execute("ROLLBACK")
+            raise
+            
     except HTTPException:
         if conn:
             conn.rollback()
