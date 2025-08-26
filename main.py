@@ -4,6 +4,15 @@ from typing import Dict, Optional, Any
 import os
 import json
 
+
+# Render → Uvicorn → FastAPI
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
 # Variables globales pour le pool de connexions
 connection_pool = None
 
@@ -50,7 +59,7 @@ def init_connection_pool():
             print("⚠️ Aucun module de pool disponible - pool désactivé")
             connection_pool = None
 
-def get_db_connection():
+def get_db_connection(auto_create_tables=True):
     """Obtenir une connexion du pool (rétrocompatible)"""
     global connection_pool
     database_url = os.environ.get('DATABASE_URL')
@@ -58,41 +67,47 @@ def get_db_connection():
     if not database_url:
         raise Exception("DATABASE_URL non définie")
     
+    conn = None
+    
     # Si le pool est disponible, l'utiliser    
     if connection_pool:
         try:
             if hasattr(connection_pool, 'getconn'):
                 # psycopg2 pool
                 conn = connection_pool.getconn()
-                # Ajouter metadata pour close_db_connection
                 conn._pool_type = 'psycopg2_pool'
-                return conn
             else:
                 # psycopg3 pool
                 conn = connection_pool.connection()
-                # Ajouter metadata pour close_db_connection  
                 conn._pool_type = 'psycopg3_pool'
-                return conn
         except Exception as e:
             print(f"⚠️ Erreur pool, fallback connexion directe: {e}")
     
-    # Fallback : créer une connexion directe
-    try:
-        # Essayer psycopg3 d'abord
-        import psycopg
-        conn = psycopg.connect(database_url)
-        conn._pool_type = 'direct_psycopg3'
-        return conn
-    except ImportError:
+    # Fallback : créer une connexion directe si pas encore de connexion
+    if not conn:
         try:
-            # Fallback sur psycopg2
-            import psycopg2
-            conn = psycopg2.connect(database_url)
-            conn._pool_type = 'direct_psycopg2'
-            return conn
+            # Essayer psycopg3 d'abord
+            import psycopg
+            conn = psycopg.connect(database_url)
+            conn._pool_type = 'direct_psycopg3'
         except ImportError:
-            raise Exception("Aucun module psycopg disponible")
-
+            try:
+                # Fallback sur psycopg2
+                import psycopg2
+                conn = psycopg2.connect(database_url)
+                conn._pool_type = 'direct_psycopg2'
+            except ImportError:
+                raise Exception("Aucun module psycopg disponible")
+        
+    # Créer automatiquement les tables si demandé (APRÈS avoir obtenu la connexion)
+    if auto_create_tables and conn:
+        try:
+            ensure_chantiers_tables(conn)
+            ensure_etiquettes_grille_tables(conn)
+        except Exception as e:
+            print(f"⚠️ Erreur création auto des tables: {e}")
+    
+    return conn
 
 def close_db_connection(conn):
     """Libérer une connexion selon son type (rétrocompatible)"""
@@ -124,6 +139,9 @@ def close_db_connection(conn):
             conn.close()
         except:
             pass
+
+__all__ = ['get_db_connection', 'close_db_connection', 'ensure_chantiers_tables', 'ensure_etiquettes_grille_tables']
+
 
 # Import conditionnel des routers pour éviter les erreurs de déploiement
 try:
@@ -705,9 +723,4 @@ def create_all_tables():
            close_db_connection(conn)
 
 
-# Render → Uvicorn → FastAPI
 
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
