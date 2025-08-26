@@ -214,71 +214,67 @@ def delete_preparateur(nom: str):
 
 @router.get("/chantiers")
 def get_chantiers():
-    """Récupérer tous les chantiers depuis PostgreSQL"""
+    """Récupérer tous les chantiers depuis PostgreSQL avec optimisation SQL"""
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Requête sans forced_planning_lock mais avec verrous_planification
+        # ✅ OPTIMISATION : Faire l'agrégation côté SQL
         cur.execute("""
-            SELECT c.id, c.label, c.status, c.prepTime, c.endDate, c.preparateur_nom, c.ChargeRestante,
-                   p.chantier_id, p.semaine, p.minutes,
-                   s.semaine as solde_semaine, s.minutes as solde_minutes,
-                   v.semaine as verrou_semaine, v.preparateur_nom as verrou_preparateur, v.minutes as verrou_minutes
+            SELECT 
+                c.id,
+                c.label,
+                c.status,
+                c.prepTime,
+                c.endDate,
+                c.preparateur_nom,
+                c.ChargeRestante,
+                -- Agrégation des planifications en JSON
+                COALESCE(
+                    json_object_agg(p.semaine, p.minutes) FILTER (WHERE p.semaine IS NOT NULL),
+                    '{}'::json
+                ) as planification,
+                -- Agrégation des soldes en JSON
+                COALESCE(
+                    json_object_agg(s.semaine, s.minutes) FILTER (WHERE s.semaine IS NOT NULL),
+                    '{}'::json
+                ) as soldes,
+                -- Agrégation des verrous en JSON
+                COALESCE(
+                    json_object_agg(
+                        v.semaine, 
+                        json_build_object('preparateur', v.preparateur_nom, 'minutes', v.minutes)
+                    ) FILTER (WHERE v.semaine IS NOT NULL),
+                    '{}'::json
+                ) as forcedPlanningLock
             FROM chantiers c
             LEFT JOIN planifications p ON c.id = p.chantier_id
-            LEFT JOIN soldes s ON c.id = s.chantier_id
+            LEFT JOIN soldes s ON c.id = s.chantier_id  
             LEFT JOIN verrous_planification v ON c.id = v.chantier_id
-            ORDER BY c.id, p.semaine, s.semaine, v.semaine
+            GROUP BY c.id, c.label, c.status, c.prepTime, c.endDate, c.preparateur_nom, c.ChargeRestante
+            ORDER BY c.id
         """)
         
         rows = cur.fetchall()
         
-        # Regrouper les résultats par chantier
+        # ✅ Plus de traitement Python complexe !
         chantiers = {}
         for row in rows:
-            chantier_id = row[0]
-            if chantier_id not in chantiers:
-                chantiers[chantier_id] = {
-                    "id": row[0],
-                    "label": row[1] or "",
-                    "status": row[2] or "Nouveau",
-                    "prepTime": row[3] or 0,
-                    "endDate": row[4] or "",
-                    "preparateur": row[5] or None,
-                    "ChargeRestante": row[6] or 0,
-                    "forcedPlanningLock": {},  # Sera rempli avec les verrous
-                    "planification": {},
-                    "soldes": {}
-                }
-            
-            # Ajouter la planification si elle existe
-            if row[8] and row[9] is not None:  # semaine et minutes de planification
-                chantiers[chantier_id]["planification"][row[8]] = row[9]
-            
-            # Ajouter le solde si il existe
-            if row[10] and row[11] is not None:  # semaine et minutes de solde
-                chantiers[chantier_id]["soldes"][row[10]] = row[11]
-            
-            # Ajouter le verrou si il existe
-            if row[12] and row[13] and row[14] is not None:  # semaine, preparateur et minutes de verrou
-                chantiers[chantier_id]["forcedPlanningLock"][row[12]] = {
-                    "preparateur": row[13],
-                    "minutes": row[14]
-                }
+            chantiers[row[0]] = {
+                "id": row[0],
+                "label": row[1] or "",
+                "status": row[2] or "Nouveau", 
+                "prepTime": row[3] or 0,
+                "endDate": row[4] or "",
+                "preparateur": row[5] or None,
+                "ChargeRestante": row[6] or 0,
+                "planification": row[7],      # ← Déjà au format JSON !
+                "soldes": row[8],             # ← Déjà au format JSON !
+                "forcedPlanningLock": row[9]  # ← Déjà au format JSON !
+            }
         
         return chantiers
-        
-    except Exception as e:
-        print(f"🚨 Erreur GET /chantiers: {str(e)}")
-        return {"error": f"Erreur base de données: {str(e)}"}
-    finally:
-        if conn:
-            try:
-                close_db_connection(conn)
-            except:
-                pass
 
 
 @router.post("/chantiers")
@@ -507,74 +503,103 @@ def update_disponibilites(dispo: Dict[str, Any]):
 
 @router.put("/sync-planning")
 def sync_complete_planning(data: Dict[str, Any]):
-    """Synchronisation complète de la planification après répartition automatique"""
+    """Synchronisation complète avec transaction explicite optimisée"""
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Mettre à jour tous les chantiers
-        if 'chantiers' in data:
-            for chantier_id, chantier_data in data['chantiers'].items():
-                # Mettre à jour le chantier principal
-                cur.execute("""
+        # ✅ Transaction explicite pour TOUT grouper
+        cur.execute("BEGIN")
+        
+        try:
+            # ✅ OPTIMISATION : Préparer toutes les données avant insertion
+            chantiers_data = []
+            planifications_data = []
+            disponibilites_data = []
+            
+            # Préparer les données chantiers
+            if 'chantiers' in data:
+                for chantier_id, chantier_data in data['chantiers'].items():
+                    chantiers_data.append((
+                        chantier_data.get('label', ''),
+                        chantier_data.get('status', 'Nouveau'),
+                        chantier_data.get('prepTime', 0),
+                        chantier_data.get('endDate', ''),
+                        chantier_data.get('preparateur'),
+                        chantier_data.get('ChargeRestante', chantier_data.get('prepTime', 0)),
+                        chantier_id
+                    ))
+                    
+                    # Préparer les planifications
+                    planifications = chantier_data.get('planification', {})
+                    for semaine, minutes in planifications.items():
+                        if minutes > 0:
+                            planifications_data.append((chantier_id, semaine, minutes))
+            
+            # Préparer les disponibilités
+            if 'data' in data:
+                for preparateur_nom, disponibilites in data['data'].items():
+                    for semaine, info in disponibilites.items():
+                        minutes = info.get('minutes', 0) if isinstance(info, dict) else info
+                        updated_at = info.get('updatedAt', '') if isinstance(info, dict) else ''
+                        if minutes > 0:
+                            disponibilites_data.append((preparateur_nom, semaine, minutes, updated_at))
+            
+            # ✅ BULK OPERATIONS avec executemany()
+            if chantiers_data:
+                cur.executemany("""
                     UPDATE chantiers SET 
                         label = %s, status = %s, prepTime = %s, 
                         endDate = %s, preparateur_nom = %s, ChargeRestante = %s
                     WHERE id = %s
-                """, (
-                    chantier_data.get('label', ''),
-                    chantier_data.get('status', 'Nouveau'),
-                    chantier_data.get('prepTime', 0),
-                    chantier_data.get('endDate', ''),
-                    chantier_data.get('preparateur'),
-                    chantier_data.get('ChargeRestante', chantier_data.get('prepTime', 0)),
-                    chantier_id
-                ))
+                """, chantiers_data)
+            
+            # Suppression groupée des planifications
+            if planifications_data:
+                chantier_ids = list(set(row[0] for row in planifications_data))
+                cur.executemany("DELETE FROM planifications WHERE chantier_id = %s", 
+                               [(cid,) for cid in chantier_ids])
                 
-                # Supprimer l'ancienne planification
-                cur.execute("DELETE FROM planifications WHERE chantier_id = %s", (chantier_id,))
+                # Insertion groupée des planifications
+                cur.executemany("""
+                    INSERT INTO planifications (chantier_id, semaine, minutes) 
+                    VALUES (%s, %s, %s)
+                """, planifications_data)
+            
+            # Disponibilités groupées
+            if disponibilites_data:
+                preparateurs = list(set(row[0] for row in disponibilites_data))
+                cur.executemany("DELETE FROM disponibilites WHERE preparateur_nom = %s",
+                               [(prep,) for prep in preparateurs])
                 
-                # Insérer la nouvelle planification
-                planification = chantier_data.get('planification', {})
-                for semaine, minutes in planification.items():
-                    if minutes > 0:
-                        cur.execute("""
-                            INSERT INTO planifications (chantier_id, semaine, minutes) 
-                            VALUES (%s, %s, %s)
-                        """, (chantier_id, semaine, minutes))
-        
-        # Mettre à jour les disponibilités
-        if 'data' in data:
-            for preparateur_nom, disponibilites in data['data'].items():
-                # Supprimer les anciennes disponibilités
-                cur.execute("DELETE FROM disponibilites WHERE preparateur_nom = %s", (preparateur_nom,))
-                
-                # Insérer les nouvelles disponibilités
-                for semaine, info in disponibilites.items():
-                    minutes = info.get('minutes', 0) if isinstance(info, dict) else info
-                    updated_at = info.get('updatedAt', '') if isinstance(info, dict) else ''
-                    
-                    if minutes > 0:
-                        cur.execute("""
-                            INSERT INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt) 
-                            VALUES (%s, %s, %s, %s)
-                        """, (preparateur_nom, semaine, minutes, updated_at))
-        
-        conn.commit()
-
-        return {"status": "✅ Planification complète synchronisée"}
-        
+                cur.executemany("""
+                    INSERT INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt) 
+                    VALUES (%s, %s, %s, %s)
+                """, disponibilites_data)
+            
+            # ✅ Commit unique à la fin
+            cur.execute("COMMIT")
+            
+            return {
+                "status": "✅ Planification complète synchronisée (optimisée)",
+                "chantiers_updated": len(chantiers_data),
+                "planifications_inserted": len(planifications_data), 
+                "disponibilites_inserted": len(disponibilites_data)
+            }
+            
+        except Exception as e:
+            # ✅ Rollback en cas d'erreur
+            cur.execute("ROLLBACK")
+            raise
+            
     except Exception as e:
         if conn:
             conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         if conn:
-            try:
-                close_db_connection(conn)
-            except:
-                pass
+            close_db_connection(conn)
 
 
 @router.get("/disponibilites")
