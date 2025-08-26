@@ -36,7 +36,6 @@ def get_preparateurs():
     conn = None
     try:
         conn = get_db_connection()
-        ensure_chantiers_tables(conn)
         cur = conn.cursor()
         
         cur.execute("SELECT nom, nni FROM preparateurs ORDER BY nom")
@@ -219,7 +218,6 @@ def get_chantiers():
     conn = None
     try:
         conn = get_db_connection()
-        ensure_chantiers_tables(conn)
         cur = conn.cursor()
         
         # Requête sans forced_planning_lock mais avec verrous_planification
@@ -677,7 +675,6 @@ def update_forced_planning_lock(chantier_id: str, lock_data: Dict[str, Any]):
     conn = None
     try:
         conn = get_db_connection()
-        ensure_chantiers_tables(conn)
         cur = conn.cursor()
         
         # Vérifier que le chantier existe
@@ -781,7 +778,6 @@ def sync_forced_planning_lock_put(lock_data: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="chantier_id requis")
         
         conn = get_db_connection()
-        ensure_chantiers_tables(conn)
         cur = conn.cursor()
         
         # Vérifier que le chantier existe
@@ -844,7 +840,6 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="chantier_id requis")
         
         conn = get_db_connection()
-        ensure_chantiers_tables(conn)
         cur = conn.cursor()
         
         # Vérifier que le chantier existe
