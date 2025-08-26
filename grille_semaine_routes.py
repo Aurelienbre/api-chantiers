@@ -22,44 +22,6 @@ router = APIRouter(
 )
 
 
-def ensure_etiquettes_grille_tables(conn):
-    """S'assurer que les tables pour les étiquettes de grille existent"""
-    cur = conn.cursor()
-    
-    # Table principale des étiquettes de grille
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS etiquettes_grille (
-            id SERIAL PRIMARY KEY,
-            type_activite VARCHAR(255) NOT NULL,
-            description TEXT,
-            group_id VARCHAR(100),
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Table des planifications d'étiquettes
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS planifications_etiquettes (
-            id SERIAL PRIMARY KEY,
-            etiquette_id INTEGER NOT NULL REFERENCES etiquettes_grille(id) ON DELETE CASCADE,
-            date_jour DATE NOT NULL,
-            heure_debut TIME NOT NULL,
-            heure_fin TIME NOT NULL,
-            preparateurs TEXT NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            
-            CONSTRAINT check_heures CHECK (heure_debut < heure_fin)
-        )
-    """)
-    
-    # Index pour améliorer les performances
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_etiquettes_type ON etiquettes_grille (type_activite)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_etiquettes_group ON etiquettes_grille (group_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_etiquette ON planifications_etiquettes (etiquette_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_date ON planifications_etiquettes (date_jour)")
-    
-    conn.commit()
 
 
 # ========================================================================
@@ -362,7 +324,6 @@ def get_all_etiquettes_grille():
     conn = None
     try:
         conn = get_db_connection()
-        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
         # Récupérer toutes les étiquettes avec leurs planifications
@@ -424,7 +385,6 @@ def create_etiquette_grille(etiquette_data: Dict[str, Any]):
     conn = None
     try:
         conn = get_db_connection()
-        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
         # Valider les données requises
@@ -519,7 +479,6 @@ def update_etiquette_grille(etiquette_id: int, etiquette_data: Dict[str, Any]):
     conn = None
     try:
         conn = get_db_connection()
-        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
         # Vérifier que l'étiquette existe
@@ -590,7 +549,6 @@ def update_etiquette_horaires(etiquette_id: int, horaires_data: Dict[str, Any]):
     conn = None
     try:
         conn = get_db_connection()
-        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
         # Vérifier que l'étiquette existe
@@ -656,7 +614,6 @@ def add_planification_to_etiquette(etiquette_id: int, planification_data: dict):
     conn = None
     try:
         conn = get_db_connection()
-        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
         # Vérifier que l'étiquette existe
@@ -723,7 +680,6 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
     conn = None
     try:
         conn = get_db_connection()
-        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
         # Vérifier que l'étiquette et la planification existent
@@ -865,7 +821,6 @@ def add_preparateur_to_planification(etiquette_id: int, planification_id: int, p
     conn = None
     try:
         conn = get_db_connection()
-        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
         # Vérifier que l'étiquette et la planification existent
@@ -959,7 +914,6 @@ def delete_etiquette_grille(etiquette_id: int):
     conn = None
     try:
         conn = get_db_connection()
-        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
         # Récupérer les informations avant suppression
@@ -1009,7 +963,6 @@ def delete_planification_etiquette(etiquette_id: int, planification_id: int):
     conn = None
     try:
         conn = get_db_connection()
-        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
         # Vérifier que l'étiquette et la planification existent
@@ -1095,7 +1048,6 @@ def remove_preparateur_from_planification(etiquette_id: int, planification_id: i
     conn = None
     try:
         conn = get_db_connection()
-        ensure_etiquettes_grille_tables(conn)
         cur = conn.cursor()
         
         # Vérifier que l'étiquette et la planification existent
