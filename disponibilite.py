@@ -41,9 +41,17 @@ def valider_format_semaine(semaine: str) -> bool:
         if not (1 <= week_num <= 53):
             return False
             
-        # Vérifier que la semaine existe pour cette année
-        last_week = datetime(year, 12, 31).isocalendar()[1]
-        return week_num <= last_week
+        # ✅ MÉTHODE SIMPLE : Essayer de calculer la date et voir si ça marche
+        try:
+            jan4 = datetime(year, 1, 4)  # Le 4 janvier est toujours dans la semaine 1 ISO
+            week_start = jan4 + timedelta(days=(week_num - 1) * 7 - jan4.weekday())
+            
+            # Vérifier que la semaine calculée correspond bien au numéro demandé
+            calculated_year, calculated_week, _ = week_start.isocalendar()
+            return calculated_year == year and calculated_week == week_num
+            
+        except ValueError:
+            return False
         
     except (ValueError, IndexError):
         return False
