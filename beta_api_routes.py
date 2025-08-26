@@ -11,7 +11,6 @@ Ce module contient toutes les routes relatives à :
 
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Optional, Any
-import os
 from main import get_db_connection, close_db_connection
 
 
@@ -1199,42 +1198,7 @@ def delete_all_chantiers():
     """Supprimer tous les chantiers et toutes leurs données associées"""
     conn = None
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Compter les éléments avant suppression
-        cur.execute("SELECT COUNT(*) FROM chantiers")
-        chantiers_count = cur.fetchone()[0]
-        
-        cur.execute("SELECT COUNT(*) FROM soldes")
-        soldes_count = cur.fetchone()[0]
-        
-        if chantiers_count == 0:
-            return {
-                "deleted": False,
-                "message": "Aucun chantier à supprimer",
-                "status": "success"
-            }
-        
-        # Supprimer toutes les données
-        # 1. Supprimer tous les soldes
-        cur.execute("DELETE FROM soldes")
-        soldes_deleted = cur.rowcount
-        
-        # 2. Supprimer toutes les planifications
-        cur.execute("DELETE FROM planifications")
-        planifications_deleted = cur.rowcount
-
-        # 3. Supprimer les verrous
-        cur.execute("DELETE FROM verrous_planification")
-        verrous_deleted = cur.rowcount
-
-        # 4. Supprimer tous les chantiers
-        cur.execute("DELETE FROM chantiers")
-        chantiers_deleted = cur.rowcount
-
-
-        conn.commit()
+        # ...existing code...
         
         return {
             "deleted": True,
@@ -1249,7 +1213,6 @@ def delete_all_chantiers():
         if conn:
             conn.rollback()
         raise
-
     except Exception as e:
         if conn:
             conn.rollback()
