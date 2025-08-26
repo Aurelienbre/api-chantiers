@@ -410,7 +410,6 @@ def get_disponibilites_calculees_tous_preparateurs(semaine: Optional[str] = None
     finally:
         if conn:
             close_db_connection(conn)
-
 # ========================================================================
 # ROUTES DE MIGRATION DES ANCIENS FORMATS
 # ========================================================================
