@@ -275,6 +275,16 @@ def get_chantiers():
             }
         
         return chantiers
+        
+    except Exception as e:
+        print(f"🚨 Erreur GET /chantiers: {str(e)}")
+        return {"error": f"Erreur base de données: {str(e)}"}
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 @router.post("/chantiers")
