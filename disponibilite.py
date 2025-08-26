@@ -66,14 +66,25 @@ def dates_de_semaine(semaine: str) -> dict:
     year = int(year_str)
     week_num = int(week_part[1:])  # Enlever le 'W' et convertir
     
-    # ✅ CORRECTION COMPLÈTE : Calcul ISO 8601 correct
+    # ✅ MÉTHODE PLUS ROBUSTE POUR ISO 8601
     try:
-        # Méthode 1 : Utiliser ISO calendar directement
-        jan4 = datetime(year, 1, 4)  # Le 4 janvier est toujours dans la semaine 1 ISO
-        week_start = jan4 + timedelta(days=(week_num - 1) * 7 - jan4.weekday())
+        # Utiliser strptime avec le format ISO exact
+        date_string = f"{year}-W{week_num:02d}-1"  # Lundi de la semaine
+        week_start = datetime.strptime(date_string, "%Y-W%W-%w")
         
-    except ValueError as e:
-        raise ValueError(f"Impossible de calculer les dates pour la semaine {semaine}: {e}")
+        # Fallback avec la méthode actuelle si strptime échoue
+        if week_start.isocalendar()[1] != week_num:
+            # Méthode alternative plus précise
+            jan4 = datetime(year, 1, 4)  # Le 4 janvier est toujours dans la semaine 1 ISO
+            week_start = jan4 + timedelta(days=(week_num - 1) * 7 - jan4.weekday())
+        
+    except ValueError:
+        # Méthode de fallback
+        try:
+            jan4 = datetime(year, 1, 4)
+            week_start = jan4 + timedelta(days=(week_num - 1) * 7 - jan4.weekday())
+        except ValueError as e:
+            raise ValueError(f"Impossible de calculer les dates pour la semaine {semaine}: {e}")
     
     return {
         'lundi': week_start,
@@ -86,7 +97,6 @@ def dates_de_semaine(semaine: str) -> dict:
         'debut': week_start.date(),
         'fin': (week_start + timedelta(days=6)).date()
     }
-
 # ========================================================================
 # FONCTION DE CALCUL DES DISPONIBILITÉS (RÉUTILISABLE)
 # ========================================================================
@@ -275,15 +285,15 @@ def get_semaines_disponibles():
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Récupérer les semaines avec des planifications
+        # ✅ CORRECTION : Utiliser EXTRACT(ISOYEAR) et EXTRACT(WEEK) ISO
         cur.execute("""
             SELECT DISTINCT 
-                EXTRACT(YEAR FROM p.date_jour) as annee,
+                EXTRACT(ISOYEAR FROM p.date_jour) as annee,
                 EXTRACT(WEEK FROM p.date_jour) as semaine_num,
                 COUNT(p.id) as nb_planifications
             FROM planifications_etiquettes p
             GROUP BY 
-                EXTRACT(YEAR FROM p.date_jour),
+                EXTRACT(ISOYEAR FROM p.date_jour),
                 EXTRACT(WEEK FROM p.date_jour)
             ORDER BY annee DESC, semaine_num DESC
             LIMIT 20
