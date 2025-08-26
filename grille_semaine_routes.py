@@ -169,31 +169,36 @@ def get_horaires_preparateur(preparateur_nom: str):
 
 @router.put("/horaires/{preparateur_nom}")
 def update_horaires_preparateur(preparateur_nom: str, horaires_data: Dict[str, Any]):
-    """Mettre à jour les horaires d'un préparateur"""
+    """Mettre à jour les horaires d'un préparateur (optimisé)"""
     conn = None
     try:
-        
         conn = get_db_connection()
         cur = conn.cursor()
         
         # Supprimer tous les horaires existants pour ce préparateur
         cur.execute("DELETE FROM horaires_preparateurs WHERE preparateur_nom = %s", (preparateur_nom,))
         
-        # Insérer les nouveaux horaires
+        # ✅ OPTIMISATION : Préparer toutes les données pour bulk insert
+        horaires_bulk_data = []
         for jour, creneaux in horaires_data.items():
             if jour in ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'] and creneaux:
                 for creneau in creneaux:
                     if isinstance(creneau, dict) and 'debut' in creneau and 'fin' in creneau:
-                        cur.execute("""
-                            INSERT INTO horaires_preparateurs (preparateur_nom, jour_semaine, heure_debut, heure_fin)
-                            VALUES (%s, %s, %s, %s)
-                        """, (preparateur_nom, jour, creneau['debut'], creneau['fin']))
+                        horaires_bulk_data.append((preparateur_nom, jour, creneau['debut'], creneau['fin']))
+        
+        # ✅ Bulk insert
+        if horaires_bulk_data:
+            cur.executemany("""
+                INSERT INTO horaires_preparateurs (preparateur_nom, jour_semaine, heure_debut, heure_fin)
+                VALUES (%s, %s, %s, %s)
+            """, horaires_bulk_data)
         
         conn.commit()
         
         return {
-            "status": "✅ Horaires mis à jour",
+            "status": "✅ Horaires mis à jour (optimisé)",
             "preparateur": preparateur_nom,
+            "creneaux_updated": len(horaires_bulk_data),
             "message": f"Horaires de {preparateur_nom} synchronisés avec succès"
         }
         
@@ -213,11 +218,40 @@ def sync_all_horaires(horaires_data: Dict[str, Any]):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # ...existing code... (création table)
+        # ✅ AJOUT : Vérifier si la table existe et la créer si nécessaire
+        cur.execute("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_name = 'horaires_preparateurs'
+        """)
+        table_exists = cur.fetchone()
+        
+        if not table_exists:
+            # Créer la table si elle n'existe pas
+            cur.execute("""
+                CREATE TABLE horaires_preparateurs (
+                    id SERIAL PRIMARY KEY,
+                    preparateur_nom VARCHAR(255) NOT NULL,
+                    jour_semaine VARCHAR(20) NOT NULL,
+                    heure_debut TIME NOT NULL,
+                    heure_fin TIME NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    
+                    CONSTRAINT check_jour_semaine CHECK (jour_semaine IN ('lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche'))
+                )
+            """)
+            
+            # Créer des index
+            cur.execute("CREATE INDEX idx_horaires_preparateur ON horaires_preparateurs (preparateur_nom)")
+            cur.execute("CREATE INDEX idx_horaires_jour ON horaires_preparateurs (jour_semaine)")
+            
+            conn.commit()
         
         # Supprimer tous les horaires existants
         cur.execute("DELETE FROM horaires_preparateurs")
         
+        # ✅ AJOUT DE LA LOGIQUE MANQUANTE :
         # ✅ OPTIMISATION : Préparer toutes les données avant insertion
         horaires_bulk_data = []
         for preparateur_nom, horaires in horaires_data.items():
@@ -252,38 +286,6 @@ def sync_all_horaires(horaires_data: Dict[str, Any]):
         if conn:
             conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur lors de la synchronisation: {str(e)}")
-    finally:
-        if conn:
-            close_db_connection(conn)
-
-@router.delete("/horaires/{preparateur_nom}")
-def delete_horaires_preparateur(preparateur_nom: str):
-    """Supprimer tous les horaires d'un préparateur"""
-    conn = None
-    try:
-        
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Compter les horaires avant suppression
-        cur.execute("SELECT COUNT(*) FROM horaires_preparateurs WHERE preparateur_nom = %s", (preparateur_nom,))
-        count_before = cur.fetchone()[0]
-        
-        # Supprimer les horaires
-        cur.execute("DELETE FROM horaires_preparateurs WHERE preparateur_nom = %s", (preparateur_nom,))
-        
-        conn.commit()
-        
-        return {
-            "status": "✅ Horaires supprimés",
-            "preparateur": preparateur_nom,
-            "creneaux_supprimes": count_before
-        }
-        
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
     finally:
         if conn:
             close_db_connection(conn)
@@ -502,29 +504,35 @@ def update_etiquette_grille(etiquette_id: int, etiquette_data: Dict[str, Any]):
             """
             cur.execute(query, update_values)
         
-        # Mettre à jour les planifications si fournies
+        # ✅ OPTIMISATION : Bulk insert pour les planifications
         if 'planifications' in etiquette_data:
             # Supprimer les anciennes planifications
             cur.execute("DELETE FROM planifications_etiquettes WHERE etiquette_id = %s", (etiquette_id,))
             
-            # Créer les nouvelles planifications
+            # ✅ Préparer toutes les planifications pour bulk insert
+            planifications_bulk_data = []
             for planif in etiquette_data['planifications']:
-                cur.execute("""
-                    INSERT INTO planifications_etiquettes (etiquette_id, date_jour, heure_debut, heure_fin, preparateurs)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (
+                planifications_bulk_data.append((
                     etiquette_id,
                     planif['date_jour'],
                     planif['heure_debut'],
                     planif['heure_fin'],
                     planif['preparateurs']
                 ))
+            
+            # ✅ Bulk insert
+            if planifications_bulk_data:
+                cur.executemany("""
+                    INSERT INTO planifications_etiquettes (etiquette_id, date_jour, heure_debut, heure_fin, preparateurs)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, planifications_bulk_data)
         
         conn.commit()
         
         return {
-            "status": "✅ Étiquette mise à jour",
-            "etiquette_id": etiquette_id
+            "status": "✅ Étiquette mise à jour (optimisé)",
+            "etiquette_id": etiquette_id,
+            "planifications_updated": len(etiquette_data.get('planifications', []))
         }
         
     except HTTPException:
@@ -673,6 +681,9 @@ def add_planification_to_etiquette(etiquette_id: int, planification_data: dict):
 @router.put("/etiquettes-grille/{etiquette_id}/planifications/{planification_id}")
 def update_planification_specifique(etiquette_id: int, planification_id: int, update_data: Dict[str, Any]):
     """Mettre à jour une planification spécifique (date, heures, et un seul préparateur)"""
+    import os  # ✅ Ajout pour debug conditionnel
+    DEBUG_MODE = os.getenv('DEBUG_MODE', 'false').lower() == 'true'
+    
     conn = None
     try:
         conn = get_db_connection()
@@ -705,33 +716,39 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
         nouveau_preparateur = update_data['nouveau_preparateur'].strip()
         ancien_preparateur = update_data.get('ancien_preparateur', '').strip()  # Optionnel
         
-        print(f"🔧 Mise à jour planification {planification_id}:")
-        print(f"   📋 Données reçues: {update_data}")
-        print(f"   👥 Préparateurs actuels: {preparateurs_list}")
-        print(f"   👤 Ancien préparateur: '{ancien_preparateur}' (type: {type(ancien_preparateur)})")
-        print(f"   👤 Nouveau préparateur: '{nouveau_preparateur}' (type: {type(nouveau_preparateur)})")
-        print(f"   🔍 Ancien préparateur in list: {ancien_preparateur in preparateurs_list if ancien_preparateur else 'N/A'}")
+        # ✅ OPTIMISATION : Logs conditionnels
+        if DEBUG_MODE:
+            print(f"🔧 Mise à jour planification {planification_id}:")
+            print(f"   📋 Données reçues: {update_data}")
+            print(f"   👥 Préparateurs actuels: {preparateurs_list}")
+            print(f"   👤 Ancien préparateur: '{ancien_preparateur}' (type: {type(ancien_preparateur)})")
+            print(f"   👤 Nouveau préparateur: '{nouveau_preparateur}' (type: {type(nouveau_preparateur)})")
+            print(f"   🔍 Ancien préparateur in list: {ancien_preparateur in preparateurs_list if ancien_preparateur else 'N/A'}")
         
         # Si on a spécifié l'ancien préparateur, on le remplace spécifiquement
         if ancien_preparateur and ancien_preparateur in preparateurs_list:
             # Remplacer spécifiquement l'ancien préparateur
             index = preparateurs_list.index(ancien_preparateur)
             preparateurs_list[index] = nouveau_preparateur
-            print(f"🔄 Remplacement spécifique: '{ancien_preparateur}' → '{nouveau_preparateur}' (position {index})")
+            if DEBUG_MODE:
+                print(f"🔄 Remplacement spécifique: '{ancien_preparateur}' → '{nouveau_preparateur}' (position {index})")
         
         elif nouveau_preparateur not in preparateurs_list:
             if preparateurs_list:
                 # Pas d'ancien préparateur spécifié, remplacer le premier par défaut
                 ancien_prep_defaut = preparateurs_list[0]
                 preparateurs_list[0] = nouveau_preparateur
-                print(f"🔄 Remplacement par défaut: '{ancien_prep_defaut}' → '{nouveau_preparateur}' (premier préparateur)")
-                print(f"   ⚠️ Raison: ancien_preparateur='{ancien_preparateur}' non trouvé dans {preparateurs_list}")
+                if DEBUG_MODE:
+                    print(f"🔄 Remplacement par défaut: '{ancien_prep_defaut}' → '{nouveau_preparateur}' (premier préparateur)")
+                    print(f"   ⚠️ Raison: ancien_preparateur='{ancien_preparateur}' non trouvé dans {preparateurs_list}")
             else:
                 # Ajouter si la liste est vide
                 preparateurs_list = [nouveau_preparateur]
-                print(f"➕ Ajout nouveau préparateur: '{nouveau_preparateur}'")
+                if DEBUG_MODE:
+                    print(f"➕ Ajout nouveau préparateur: '{nouveau_preparateur}'")
         else:
-            print(f"ℹ️ Préparateur '{nouveau_preparateur}' déjà présent, pas de changement")
+            if DEBUG_MODE:
+                print(f"ℹ️ Préparateur '{nouveau_preparateur}' déjà présent, pas de changement")
         
         # 🚨 NOUVELLE LOGIQUE : Détecter et supprimer les doublons
         preparateurs_avant_dedoublonnage = preparateurs_list.copy()
@@ -746,7 +763,7 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
         doublons_detectes = len(preparateurs_avant_dedoublonnage) != len(preparateurs_dedoublonnes)
         doublons_supprimes = len(preparateurs_avant_dedoublonnage) - len(preparateurs_dedoublonnes)
         
-        if doublons_detectes:
+        if doublons_detectes and DEBUG_MODE:
             print(f"🔍 DOUBLONS DETECTÉS:")
             print(f"   📋 Avant dédoublonnage: {preparateurs_avant_dedoublonnage} ({len(preparateurs_avant_dedoublonnage)} éléments)")
             print(f"   ✅ Après dédoublonnage: {preparateurs_dedoublonnes} ({len(preparateurs_dedoublonnes)} éléments)")
@@ -754,7 +771,9 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
         
         preparateurs_list = preparateurs_dedoublonnes
         nouveaux_preparateurs = ','.join(preparateurs_list)
-        print(f"   👥 Nouveaux préparateurs finaux: {nouveaux_preparateurs}")
+        
+        if DEBUG_MODE:
+            print(f"   👥 Nouveaux préparateurs finaux: {nouveaux_preparateurs}")
         
         # Mettre à jour la planification
         cur.execute("""
@@ -796,7 +815,11 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
             "nouveaux_preparateurs": nouveaux_preparateurs,
             "doublons_detectes": doublons_detectes,
             "doublons_supprimes": doublons_supprimes if doublons_detectes else 0,
-            "preparateurs_avant_dedoublonnage": preparateurs_avant_dedoublonnage if doublons_detectes else None
+            # ✅ Infos debug seulement en mode debug
+            **({"debug_info": {
+                "preparateurs_avant_dedoublonnage": preparateurs_avant_dedoublonnage,
+                "preparateurs_dedoublonnes": preparateurs_dedoublonnes
+            }} if DEBUG_MODE else {})
         }
         
     except HTTPException:
@@ -814,6 +837,9 @@ def update_planification_specifique(etiquette_id: int, planification_id: int, up
 @router.post("/etiquettes-grille/{etiquette_id}/planifications/{planification_id}/preparateurs")
 def add_preparateur_to_planification(etiquette_id: int, planification_id: int, preparateur_data: Dict[str, Any]):
     """Ajouter un préparateur à une planification existante"""
+    import os  # ✅ Ajout pour debug conditionnel
+    DEBUG_MODE = os.getenv('DEBUG_MODE', 'false').lower() == 'true'
+    
     conn = None
     try:
         conn = get_db_connection()
@@ -844,9 +870,11 @@ def add_preparateur_to_planification(etiquette_id: int, planification_id: int, p
         # Analyser la liste des préparateurs actuels
         preparateurs_list = [p.strip() for p in preparateurs_actuels.split(',') if p.strip()] if preparateurs_actuels else []
         
-        print(f"🔧 Ajout préparateur à la planification {planification_id}:")
-        print(f"   👤 Nouveau préparateur: '{nouveau_preparateur}'")
-        print(f"   👥 Préparateurs actuels: {preparateurs_list}")
+        # ✅ OPTIMISATION : Logs conditionnels
+        if DEBUG_MODE:
+            print(f"🔧 Ajout préparateur à la planification {planification_id}:")
+            print(f"   👤 Nouveau préparateur: '{nouveau_preparateur}'")
+            print(f"   👥 Préparateurs actuels: {preparateurs_list}")
         
         # Vérifier si le préparateur est déjà dans la liste
         if nouveau_preparateur in preparateurs_list:
@@ -859,7 +887,8 @@ def add_preparateur_to_planification(etiquette_id: int, planification_id: int, p
         preparateurs_list.append(nouveau_preparateur)
         nouveaux_preparateurs = ','.join(preparateurs_list)
         
-        print(f"   👥 Nouveaux préparateurs: {nouveaux_preparateurs}")
+        if DEBUG_MODE:
+            print(f"   👥 Nouveaux préparateurs: {nouveaux_preparateurs}")
         
         # Mettre à jour la planification avec le nouveau préparateur
         cur.execute("""
@@ -889,7 +918,12 @@ def add_preparateur_to_planification(etiquette_id: int, planification_id: int, p
             "preparateur_ajoute": nouveau_preparateur,
             "anciens_preparateurs": preparateurs_actuels if preparateurs_actuels else "(aucun)",
             "nouveaux_preparateurs": nouveaux_preparateurs,
-            "total_preparateurs": len(preparateurs_list)
+            "total_preparateurs": len(preparateurs_list),
+            # ✅ Infos debug seulement en mode debug
+            **({"debug_info": {
+                "preparateurs_avant": preparateurs_actuels,
+                "preparateurs_list": preparateurs_list
+            }} if DEBUG_MODE else {})
         }
         
     except HTTPException:
