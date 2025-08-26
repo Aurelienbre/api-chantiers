@@ -27,14 +27,34 @@ router = APIRouter(
 # ========================================================================
 
 def valider_format_semaine(semaine: str) -> bool:
-    """Valider le format de semaine YYYY-WXX (standard ISO)"""
-    return bool(re.match(r'^\d{4}-W\d{2}$', semaine))
+    """Valider le format de semaine YYYY-WXX (standard ISO 8601)"""
+    if not re.match(r'^\d{4}-W\d{2}$', semaine):
+        return False
+    
+    # Validation supplémentaire : vérifier que la semaine existe
+    try:
+        year_str, week_part = semaine.split('-')
+        year = int(year_str)
+        week_num = int(week_part[1:])
+        
+        # Une année a entre 52 et 53 semaines ISO
+        if not (1 <= week_num <= 53):
+            return False
+            
+        # Vérifier que la semaine existe pour cette année
+        last_week = datetime(year, 12, 31).isocalendar()[1]
+        return week_num <= last_week
+        
+    except (ValueError, IndexError):
+        return False
 
 def semaine_courante() -> str:
-    """Obtenir la semaine courante au format YYYY-WXX (standard ISO)"""
+    """Obtenir la semaine courante au format YYYY-WXX (standard ISO 8601)"""
     today = datetime.now()
     year, week, _ = today.isocalendar()
     return f"{year}-W{week:02d}"
+
+
 
 def dates_de_semaine(semaine: str) -> dict:
     """Convertir une semaine YYYY-WXX en dates"""
@@ -46,8 +66,14 @@ def dates_de_semaine(semaine: str) -> dict:
     year = int(year_str)
     week_num = int(week_part[1:])  # Enlever le 'W' et convertir
     
-    jan4 = datetime(year, 1, 4)
-    week_start = jan4 + timedelta(days=(week_num - 1) * 7 - jan4.weekday())
+    # ✅ CORRECTION COMPLÈTE : Calcul ISO 8601 correct
+    try:
+        # Méthode 1 : Utiliser ISO calendar directement
+        jan4 = datetime(year, 1, 4)  # Le 4 janvier est toujours dans la semaine 1 ISO
+        week_start = jan4 + timedelta(days=(week_num - 1) * 7 - jan4.weekday())
+        
+    except ValueError as e:
+        raise ValueError(f"Impossible de calculer les dates pour la semaine {semaine}: {e}")
     
     return {
         'lundi': week_start,
@@ -72,7 +98,7 @@ def calculer_disponibilites_preparateur(preparateur_nom: str, semaine: str, conn
     
     Args:
         preparateur_nom: Nom du préparateur
-        semaine: Semaine au format YYYY-WW
+        semaine: Semaine au format YYYY-WXX
         conn: Connexion à la base de données
         
     Returns:
@@ -426,7 +452,7 @@ def migrer_format_semaines():
         cur.execute("""
             SELECT preparateur_nom, semaine, minutes, "updatedAt"
             FROM disponibilites
-            WHERE semaine LIKE '%-%' AND semaine NOT LIKE '____-__'
+            WHERE semaine LIKE '%-%' AND semaine NOT LIKE '____-W__'
             ORDER BY semaine
         """)
         
@@ -435,21 +461,25 @@ def migrer_format_semaines():
         if not anciennes_donnees:
             return {
                 "status": "ℹ️ Aucune donnée à migrer",
-                "message": "Toutes les semaines sont déjà au format standard"
+                "message": "Toutes les semaines sont déjà au format standard ISO 8601"
             }
         
         migrations = []
         
         for preparateur_nom, ancienne_semaine, minutes, updated_at in anciennes_donnees:
             try:
-                # Essayer d'extraire l'année et la semaine du format bizarre
-                # Ex: "2025-W36-1" → "2025-36"
-                if "W" in ancienne_semaine:
+                # Convertir vers le format ISO 8601 correct
+                if "-W" not in ancienne_semaine:
+                    # Ancien format "2025-35" → "2025-W35"
                     parts = ancienne_semaine.split("-")
-                    if len(parts) >= 2:
+                    if len(parts) == 2:
                         annee = parts[0]
-                        semaine_num = parts[1].replace("W", "")
-                        nouvelle_semaine = f"{annee}-{semaine_num.zfill(2)}"
+                        semaine_num = parts[1].zfill(2)
+                        nouvelle_semaine = f"{annee}-W{semaine_num}"
+                        
+                        # ✅ CORRECTION : Valider le nouveau format
+                        if not valider_format_semaine(nouvelle_semaine):
+                            raise ValueError(f"Format généré invalide: {nouvelle_semaine}")
                         
                         # Supprimer l'ancienne entrée
                         cur.execute("""
@@ -472,7 +502,7 @@ def migrer_format_semaines():
                             "ancien_format": ancienne_semaine,
                             "nouveau_format": nouvelle_semaine,
                             "minutes": minutes,
-                            "status": "✅ Migré"
+                            "status": "✅ Migré vers ISO 8601"
                         })
                         
             except Exception as e:
@@ -486,9 +516,10 @@ def migrer_format_semaines():
         conn.commit()
         
         return {
-            "status": "✅ Migration terminée",
+            "status": "✅ Migration ISO 8601 terminée",
+            "format_cible": "YYYY-WXX (ISO 8601)",
             "nb_total": len(anciennes_donnees),
-            "nb_succes": sum(1 for m in migrations if m.get("status") == "✅ Migré"),
+            "nb_succes": sum(1 for m in migrations if "✅" in m.get("status", "")),
             "nb_erreurs": sum(1 for m in migrations if "error" in m),
             "migrations": migrations
         }
@@ -496,7 +527,7 @@ def migrer_format_semaines():
     except Exception as e:
         if conn:
             conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la migration: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la migration ISO 8601: {str(e)}")
     finally:
         if conn:
             close_db_connection(conn)
