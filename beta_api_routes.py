@@ -443,13 +443,15 @@ def update_planification(planif: Dict[str, Any]):
             cur.execute("DELETE FROM planifications WHERE chantier_id = %s", (chantier_id,))
             deleted_count = cur.rowcount
         
-        # Insérer les nouvelles planifications
+        # ✅ CORRECTION : Utiliser ON CONFLICT pour éviter les doublons
         inserted_count = 0
         for semaine, minutes in planifications.items():
             if minutes > 0:
                 cur.execute("""
                     INSERT INTO planifications (chantier_id, semaine, minutes) 
                     VALUES (%s, %s, %s)
+                    ON CONFLICT (chantier_id, semaine) 
+                    DO UPDATE SET minutes = EXCLUDED.minutes
                 """, (chantier_id, semaine, minutes))
                 inserted_count += 1
         
@@ -580,6 +582,8 @@ def sync_complete_planning(data: Dict[str, Any]):
                 cur.executemany("""
                     INSERT INTO planifications (chantier_id, semaine, minutes) 
                     VALUES (%s, %s, %s)
+                    ON CONFLICT (chantier_id, semaine) 
+                    DO UPDATE SET minutes = EXCLUDED.minutes
                 """, planifications_data)
             
             # Disponibilités groupées
