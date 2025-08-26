@@ -12,7 +12,6 @@ Ce module contient toutes les routes relatives à :
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Optional, Any
 import os
-import json
 from main import get_db_connection, close_db_connection
 
 
@@ -25,141 +24,6 @@ router = APIRouter(
 
 
 
-def ensure_chantiers_tables(conn):
-    """S'assurer que les tables pour les chantiers et préparateurs existent"""
-    cur = conn.cursor()
-    
-    # Table des préparateurs
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS preparateurs (
-            nom VARCHAR(255) PRIMARY KEY,
-            nni VARCHAR(50) NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Table des chantiers
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS chantiers (
-            id VARCHAR(255) PRIMARY KEY,
-            label VARCHAR(500) NOT NULL,
-            status VARCHAR(100) DEFAULT 'Nouveau',
-            prepTime INTEGER DEFAULT 0,
-            endDate VARCHAR(50),
-            preparateur_nom VARCHAR(255) REFERENCES preparateurs(nom) ON UPDATE CASCADE ON DELETE SET NULL,
-            ChargeRestante INTEGER DEFAULT 0,
-            forced_planning_lock JSONB DEFAULT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Table des planifications
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS planifications (
-            id SERIAL PRIMARY KEY,
-            chantier_id VARCHAR(255) NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
-            semaine VARCHAR(50) NOT NULL,
-            minutes INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            
-            CONSTRAINT unique_chantier_semaine UNIQUE (chantier_id, semaine)
-        )
-    """)
-    
-    # Table des soldes
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS soldes (
-            id SERIAL PRIMARY KEY,
-            chantier_id VARCHAR(255) NOT NULL REFERENCES chantiers(id) ON DELETE CASCADE,
-            semaine VARCHAR(50) NOT NULL,
-            minutes INTEGER NOT NULL DEFAULT 0,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            
-            CONSTRAINT unique_solde_chantier_semaine UNIQUE (chantier_id, semaine)
-        )
-    """)
-    
-    # Table des disponibilités
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS disponibilites (
-            id SERIAL PRIMARY KEY,
-            preparateur_nom VARCHAR(255) NOT NULL REFERENCES preparateurs(nom) ON UPDATE CASCADE ON DELETE CASCADE,
-            semaine VARCHAR(50) NOT NULL,
-            minutes INTEGER NOT NULL DEFAULT 0,
-            updatedAt VARCHAR(100) DEFAULT '',
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            
-            CONSTRAINT unique_dispo_preparateur_semaine UNIQUE (preparateur_nom, semaine)
-        )
-    """)
-    
-    # Table des horaires préparateurs
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS horaires_preparateurs (
-            id SERIAL PRIMARY KEY,
-            preparateur_nom VARCHAR(255) NOT NULL REFERENCES preparateurs(nom) ON UPDATE CASCADE ON DELETE CASCADE,
-            jour_semaine VARCHAR(20) NOT NULL,
-            heure_debut TIME NOT NULL,
-            heure_fin TIME NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            
-            CONSTRAINT check_jour_semaine CHECK (jour_semaine IN ('lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche')),
-            CONSTRAINT check_heures_horaires CHECK (heure_debut < heure_fin)
-        )
-    """)
-    
-    # Index pour améliorer les performances
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_chantiers_status ON chantiers (status)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_chantiers_preparateur ON chantiers (preparateur_nom)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_chantiers_forced_planning_lock ON chantiers USING GIN (forced_planning_lock)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_chantier ON planifications (chantier_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_planifications_semaine ON planifications (semaine)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_soldes_chantier ON soldes (chantier_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_soldes_semaine ON soldes (semaine)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_disponibilites_preparateur ON disponibilites (preparateur_nom)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_disponibilites_semaine ON disponibilites (semaine)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_horaires_preparateur ON horaires_preparateurs (preparateur_nom)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_horaires_jour ON horaires_preparateurs (jour_semaine)")
-    
-    # Fonction pour mettre à jour updated_at automatiquement
-    cur.execute("""
-        CREATE OR REPLACE FUNCTION update_updated_at_column()
-        RETURNS TRIGGER AS $$
-        BEGIN
-            NEW.updated_at = CURRENT_TIMESTAMP;
-            RETURN NEW;
-        END;
-        $$ language 'plpgsql';
-    """)
-    
-    # Triggers pour mettre à jour updated_at
-    cur.execute("""
-        DROP TRIGGER IF EXISTS update_preparateurs_updated_at ON preparateurs;
-        CREATE TRIGGER update_preparateurs_updated_at 
-            BEFORE UPDATE ON preparateurs 
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-    """)
-    
-    cur.execute("""
-        DROP TRIGGER IF EXISTS update_chantiers_updated_at ON chantiers;
-        CREATE TRIGGER update_chantiers_updated_at 
-            BEFORE UPDATE ON chantiers 
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-    """)
-    
-    cur.execute("""
-        DROP TRIGGER IF EXISTS update_horaires_updated_at ON horaires_preparateurs;
-        CREATE TRIGGER update_horaires_updated_at 
-            BEFORE UPDATE ON horaires_preparateurs 
-            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-    """)
-    
-    conn.commit()
-
-
 # ========================================================================
 # GESTION DES CHANTIERS DE PLANIFICATION (Beta-API.html)
 # ========================================================================
@@ -169,16 +33,14 @@ def ensure_chantiers_tables(conn):
 @router.get("/preparateurs")
 def get_preparateurs():
     """Récupérer tous les préparateurs depuis PostgreSQL"""
+    conn = None
     try:
-        
         conn = get_db_connection()
-        # Créer les tables si elles n'existent pas
         ensure_chantiers_tables(conn)
         cur = conn.cursor()
         
         cur.execute("SELECT nom, nni FROM preparateurs ORDER BY nom")
         rows = cur.fetchall()
-        close_db_connection(conn)
 
         # Convertir en dictionnaire nom -> nni
         preparateurs = {row[0]: row[1] for row in rows}
@@ -186,14 +48,21 @@ def get_preparateurs():
         return preparateurs
         
     except Exception as e:
+        print(f"🚨 Erreur GET /preparateurs: {str(e)}")
         return {"error": f"Erreur base de données: {str(e)}"}
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 @router.post("/preparateurs")
 def sync_preparateurs(preparateurs_data: Dict[str, Any]):
     """Synchroniser les préparateurs avec PostgreSQL"""
+    conn = None
     try:
-        
         conn = get_db_connection()
         cur = conn.cursor()
         
@@ -210,19 +79,26 @@ def sync_preparateurs(preparateurs_data: Dict[str, Any]):
             synced_count += 1
         
         conn.commit()
-        close_db_connection(conn)
 
         return {"status": "✅ Préparateurs synchronisés", "count": synced_count}
         
     except Exception as e:
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 @router.put("/preparateurs/{ancien_nom}")
 def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
     """Modifier un préparateur (nom et/ou NNI) avec mise à jour en cascade"""
+    conn = None
     try:
-        
         nouveau_nom = preparateur_data.get('nom', ancien_nom)
         nouveau_nni = preparateur_data.get('nni')
         
@@ -242,9 +118,6 @@ def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
             cur.execute("SELECT nom FROM preparateurs WHERE nom = %s", (nouveau_nom,))
             if cur.fetchone():
                 raise HTTPException(status_code=409, detail=f"Le préparateur '{nouveau_nom}' existe déjà")
-        
-        # ⚠️ Pour contourner les contraintes de clé étrangère, on doit d'abord 
-        # créer le nouveau préparateur, puis supprimer l'ancien
         
         if ancien_nom != nouveau_nom:
             # 1. Créer le nouveau préparateur
@@ -269,7 +142,6 @@ def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
             disponibilites_updated = 0
         
         conn.commit()
-        close_db_connection(conn)
 
         return {
             "status": "✅ Préparateur modifié avec succès",
@@ -280,15 +152,27 @@ def update_preparateur(ancien_nom: str, preparateur_data: Dict[str, Any]):
             "disponibilites_mises_a_jour": disponibilites_updated
         }
         
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
     except Exception as e:
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 @router.delete("/preparateurs/{nom}")
 def delete_preparateur(nom: str):
     """Supprimer un préparateur de PostgreSQL"""
+    conn = None
     try:
-        
         conn = get_db_connection()
         cur = conn.cursor()
         
@@ -305,7 +189,6 @@ def delete_preparateur(nom: str):
         chantiers_updated = cur.rowcount
         
         conn.commit()
-        close_db_connection(conn)
 
         if preparateur_deleted > 0:
             return {
@@ -318,8 +201,15 @@ def delete_preparateur(nom: str):
             return {"status": "⚠️ Préparateur non trouvé", "nom": nom}
             
     except Exception as e:
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
-
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 # Chantiers
 
@@ -328,98 +218,57 @@ def get_chantiers():
     """Récupérer tous les chantiers depuis PostgreSQL"""
     conn = None
     try:
-        
         conn = get_db_connection()
-        # Créer les tables si elles n'existent pas
         ensure_chantiers_tables(conn)
         cur = conn.cursor()
         
-        # Vérifier si la colonne forced_planning_lock existe
+        # Requête sans forced_planning_lock mais avec verrous_planification
         cur.execute("""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = 'chantiers' AND column_name = 'forced_planning_lock'
+            SELECT c.id, c.label, c.status, c.prepTime, c.endDate, c.preparateur_nom, c.ChargeRestante,
+                   p.chantier_id, p.semaine, p.minutes,
+                   s.semaine as solde_semaine, s.minutes as solde_minutes,
+                   v.semaine as verrou_semaine, v.preparateur_nom as verrou_preparateur, v.minutes as verrou_minutes
+            FROM chantiers c
+            LEFT JOIN planifications p ON c.id = p.chantier_id
+            LEFT JOIN soldes s ON c.id = s.chantier_id
+            LEFT JOIN verrous_planification v ON c.id = v.chantier_id
+            ORDER BY c.id, p.semaine, s.semaine, v.semaine
         """)
-        column_exists = cur.fetchone()
         
-        if column_exists:
-            # La colonne existe, requête complète avec soldes
-            cur.execute("""
-                SELECT c.id, c.label, c.status, c.prepTime, c.endDate, c.preparateur_nom, c.ChargeRestante,
-                       c.forced_planning_lock, p.chantier_id, p.semaine, p.minutes,
-                       s.semaine as solde_semaine, s.minutes as solde_minutes
-                FROM chantiers c
-                LEFT JOIN planifications p ON c.id = p.chantier_id
-                LEFT JOIN soldes s ON c.id = s.chantier_id
-                ORDER BY c.id, p.semaine, s.semaine
-            """)
+        rows = cur.fetchall()
+        
+        # Regrouper les résultats par chantier
+        chantiers = {}
+        for row in rows:
+            chantier_id = row[0]
+            if chantier_id not in chantiers:
+                chantiers[chantier_id] = {
+                    "id": row[0],
+                    "label": row[1] or "",
+                    "status": row[2] or "Nouveau",
+                    "prepTime": row[3] or 0,
+                    "endDate": row[4] or "",
+                    "preparateur": row[5] or None,
+                    "ChargeRestante": row[6] or 0,
+                    "forcedPlanningLock": {},  # Sera rempli avec les verrous
+                    "planification": {},
+                    "soldes": {}
+                }
             
-            rows = cur.fetchall()
+            # Ajouter la planification si elle existe
+            if row[8] and row[9] is not None:  # semaine et minutes de planification
+                chantiers[chantier_id]["planification"][row[8]] = row[9]
             
-            # Regrouper les résultats par chantier (avec verrous et soldes)
-            chantiers = {}
-            for row in rows:
-                chantier_id = row[0]
-                if chantier_id not in chantiers:
-                    chantiers[chantier_id] = {
-                        "id": row[0],
-                        "label": row[1],
-                        "status": row[2],
-                        "prepTime": row[3],
-                        "endDate": row[4],
-                        "preparateur": row[5],
-                        "ChargeRestante": row[6],
-                        "forcedPlanningLock": row[7] or {},
-                        "planification": {},
-                        "soldes": {}
-                    }
-                
-                # Ajouter la planification si elle existe
-                if row[9] and row[10]:  # semaine et minutes de planification
-                    chantiers[chantier_id]["planification"][row[9]] = row[10]
-                
-                # Ajouter le solde si il existe
-                if row[11] and row[12]:  # semaine et minutes de solde
-                    chantiers[chantier_id]["soldes"][row[11]] = row[12]
-        else:
-            # La colonne n'existe pas encore, requête sans forced_planning_lock mais avec soldes
-            cur.execute("""
-                SELECT c.id, c.label, c.status, c.prepTime, c.endDate, c.preparateur_nom, c.ChargeRestante,
-                       p.chantier_id, p.semaine, p.minutes,
-                       s.semaine as solde_semaine, s.minutes as solde_minutes
-                FROM chantiers c
-                LEFT JOIN planifications p ON c.id = p.chantier_id
-                LEFT JOIN soldes s ON c.id = s.chantier_id
-                ORDER BY c.id, p.semaine, s.semaine
-            """)
+            # Ajouter le solde si il existe
+            if row[10] and row[11] is not None:  # semaine et minutes de solde
+                chantiers[chantier_id]["soldes"][row[10]] = row[11]
             
-            rows = cur.fetchall()
-            
-            # Regrouper les résultats par chantier (sans verrous mais avec soldes)
-            chantiers = {}
-            for row in rows:
-                chantier_id = row[0]
-                if chantier_id not in chantiers:
-                    chantiers[chantier_id] = {
-                        "id": row[0],
-                        "label": row[1],
-                        "status": row[2],
-                        "prepTime": row[3],
-                        "endDate": row[4],
-                        "preparateur": row[5],
-                        "ChargeRestante": row[6],
-                        "forcedPlanningLock": {},  # Valeur par défaut
-                        "planification": {},
-                        "soldes": {}
-                    }
-                
-                # Ajouter la planification si elle existe
-                if row[8] and row[9]:  # semaine et minutes de planification (décalé car pas de forced_planning_lock)
-                    chantiers[chantier_id]["planification"][row[8]] = row[9]
-                
-                # Ajouter le solde si il existe
-                if row[10] and row[11]:  # semaine et minutes de solde
-                    chantiers[chantier_id]["soldes"][row[10]] = row[11]
+            # Ajouter le verrou si il existe
+            if row[12] and row[13] and row[14] is not None:  # semaine, preparateur et minutes de verrou
+                chantiers[chantier_id]["forcedPlanningLock"][row[12]] = {
+                    "preparateur": row[13],
+                    "minutes": row[14]
+                }
         
         return chantiers
         
@@ -437,6 +286,11 @@ def get_chantiers():
 @router.post("/chantiers")
 def create_chantier(chantier: Dict[str, Any]):
     """Créer un nouveau chantier dans PostgreSQL"""
+    chantier_id = chantier.get('id')
+    if not chantier_id:
+        raise HTTPException(status_code=400, detail="ID du chantier requis")
+
+    conn = None
     try:
         
         conn = get_db_connection()
@@ -464,17 +318,25 @@ def create_chantier(chantier: Dict[str, Any]):
         ))
         
         conn.commit()
-        close_db_connection(conn)
-
         return {"status": "✅ Chantier créé/mis à jour", "id": chantier.get('id')}
         
     except Exception as e:
+        if conn:
+            conn.rollback()  # ← MANQUANT
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 @router.put("/chantiers/{chantier_id}")
 def update_chantier(chantier_id: str, chantier: Dict[str, Any]):
     """Mettre à jour un chantier existant"""
+    conn = None  # ← AJOUTER
+
     try:
         
         conn = get_db_connection()
@@ -515,12 +377,22 @@ def update_chantier(chantier_id: str, chantier: Dict[str, Any]):
             raise HTTPException(status_code=404, detail="Chantier non trouvé")
         
         conn.commit()
-        close_db_connection(conn)
-
         return {"status": "✅ Chantier mis à jour", "id": chantier_id}
         
-    except Exception as e:
+    except HTTPException:  # ← AJOUTER
+        if conn:
+            conn.rollback()
+        raise
+    except Exception as e:  # ← AJOUTER le rollback
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    finally:  # ← AJOUTER
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 # Disponibilité et planification
@@ -528,32 +400,27 @@ def update_chantier(chantier_id: str, chantier: Dict[str, Any]):
 @router.put("/planification")
 def update_planification(planif: Dict[str, Any]):
     """Mettre à jour la planification d'un chantier avec préservation intelligente de l'historique"""
+    conn = None
     try:
         from datetime import datetime, timedelta
-        import re
         
         conn = get_db_connection()
         cur = conn.cursor()
         
         chantier_id = planif.get('chantier_id')
         planifications = planif.get('planifications', {})
-        preserve_past = planif.get('preserve_past', True)  # Par défaut, préserver l'historique
+        preserve_past = planif.get('preserve_past', True)
         
         if preserve_past:
-            # 🛡️ MODE INTELLIGENT : Préserver les semaines passées
-            
-            # Calculer la semaine courante (format: "2025-W33-1")
+            # Calculer la semaine courante
             now = datetime.utcnow()
-            if now.weekday() == 6:  # Si dimanche, reculer d'un jour
+            if now.weekday() == 6:
                 now = now - timedelta(days=1)
             
-            # Calculer le numéro de semaine ISO
             year, week_num, _ = now.isocalendar()
             current_week_key = f"{year}-W{week_num:02d}-1"
             
-            print(f"🔍 Mode préservation activé - Semaine courante: {current_week_key}")
-            
-            # Supprimer SEULEMENT les planifications >= semaine courante
+            # Supprimer seulement les planifications >= semaine courante
             cur.execute("""
                 DELETE FROM planifications 
                 WHERE chantier_id = %s 
@@ -561,18 +428,16 @@ def update_planification(planif: Dict[str, Any]):
             """, (chantier_id, current_week_key))
             
             deleted_count = cur.rowcount
-            print(f"📅 Planifications supprimées (>= {current_week_key}): {deleted_count}")
             
         else:
-            # 🗑️ MODE LEGACY : Supprimer tout (rétrocompatibilité)
+            # Mode legacy : Supprimer tout
             cur.execute("DELETE FROM planifications WHERE chantier_id = %s", (chantier_id,))
             deleted_count = cur.rowcount
-            print(f"🧹 Mode legacy - Toutes planifications supprimées: {deleted_count}")
         
         # Insérer les nouvelles planifications
         inserted_count = 0
         for semaine, minutes in planifications.items():
-            if minutes > 0:  # Ne stocker que les planifications non nulles
+            if minutes > 0:
                 cur.execute("""
                     INSERT INTO planifications (chantier_id, semaine, minutes) 
                     VALUES (%s, %s, %s)
@@ -580,26 +445,32 @@ def update_planification(planif: Dict[str, Any]):
                 inserted_count += 1
         
         conn.commit()
-        close_db_connection(conn)
 
         return {
             "status": "✅ Planification mise à jour avec préservation intelligente",
             "chantier_id": chantier_id,
             "mode": "preservation" if preserve_past else "legacy",
-            "current_week": current_week_key if preserve_past else None,
             "deleted_future": deleted_count,
             "inserted_new": inserted_count
         }
         
     except Exception as e:
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 @router.put("/disponibilites")
 def update_disponibilites(dispo: Dict[str, Any]):
     """Mettre à jour les disponibilités d'un préparateur"""
+    conn = None
     try:
-        
         conn = get_db_connection()
         cur = conn.cursor()
         
@@ -614,26 +485,33 @@ def update_disponibilites(dispo: Dict[str, Any]):
             minutes = info.get('minutes', 0) if isinstance(info, dict) else info
             updated_at = info.get('updatedAt', '') if isinstance(info, dict) else ''
             
-            if minutes > 0:  # Ne stocker que les disponibilités non nulles
+            if minutes > 0:
                 cur.execute("""
                     INSERT INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt) 
                     VALUES (%s, %s, %s, %s)
                 """, (preparateur_nom, semaine, minutes, updated_at))
         
         conn.commit()
-        close_db_connection(conn)
 
         return {"status": "✅ Disponibilités mises à jour", "preparateur": preparateur_nom}
         
     except Exception as e:
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 @router.put("/sync-planning")
 def sync_complete_planning(data: Dict[str, Any]):
     """Synchronisation complète de la planification après répartition automatique"""
+    conn = None
     try:
-        
         conn = get_db_connection()
         cur = conn.cursor()
         
@@ -686,19 +564,26 @@ def sync_complete_planning(data: Dict[str, Any]):
                         """, (preparateur_nom, semaine, minutes, updated_at))
         
         conn.commit()
-        close_db_connection(conn)
 
         return {"status": "✅ Planification complète synchronisée"}
         
     except Exception as e:
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 @router.get("/disponibilites")
 def get_disponibilites():
     """Récupérer toutes les disponibilités depuis PostgreSQL"""
+    conn = None
     try:
-        
         conn = get_db_connection()
         cur = conn.cursor()
         
@@ -709,7 +594,6 @@ def get_disponibilites():
         """)
         
         rows = cur.fetchall()
-        close_db_connection(conn)
 
         # Regrouper par préparateur
         disponibilites = {}
@@ -726,7 +610,14 @@ def get_disponibilites():
         return {"data": disponibilites}
         
     except Exception as e:
+        print(f"🚨 Erreur GET /disponibilites: {str(e)}")
         return {"error": f"Erreur base de données: {str(e)}"}
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 # Verouillages des chantiers
@@ -734,31 +625,59 @@ def get_disponibilites():
 @router.get("/chantiers/{chantier_id}/forced-planning-lock")
 def get_forced_planning_lock(chantier_id: str):
     """Récupérer les verrous de planification forcée d'un chantier"""
+    conn = None
     try:
-        
         conn = get_db_connection()
         cur = conn.cursor()
         
-        cur.execute("SELECT forced_planning_lock FROM chantiers WHERE id = %s", (chantier_id,))
-        row = cur.fetchone()
-        close_db_connection(conn)
-        
-        if not row:
+        # Vérifier que le chantier existe
+        cur.execute("SELECT id FROM chantiers WHERE id = %s", (chantier_id,))
+        if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Chantier non trouvé")
         
-        return {"chantier_id": chantier_id, "forced_planning_lock": row[0] or {}}
+        # Récupérer tous les verrous de ce chantier depuis la table verrous_planification
+        cur.execute("""
+            SELECT semaine, preparateur_nom, minutes 
+            FROM verrous_planification 
+            WHERE chantier_id = %s 
+            ORDER BY semaine
+        """, (chantier_id,))
         
+        rows = cur.fetchall()
+        
+        # Construire le dictionnaire des verrous au format attendu
+        forced_planning_lock = {}
+        for row in rows:
+            semaine, preparateur_nom, minutes = row
+            forced_planning_lock[semaine] = {
+                "preparateur": preparateur_nom,
+                "minutes": minutes
+            }
+        
+        return {
+            "chantier_id": chantier_id, 
+            "forced_planning_lock": forced_planning_lock
+        }
+        
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 @router.put("/chantiers/{chantier_id}/forced-planning-lock")
 def update_forced_planning_lock(chantier_id: str, lock_data: Dict[str, Any]):
     """Mettre à jour les verrous de planification forcée d'un chantier"""
+    conn = None
     try:
-        import json
-        
         conn = get_db_connection()
+        ensure_chantiers_tables(conn)
         cur = conn.cursor()
         
         # Vérifier que le chantier existe
@@ -769,34 +688,54 @@ def update_forced_planning_lock(chantier_id: str, lock_data: Dict[str, Any]):
         # Valider et normaliser les données de verrous
         forced_planning_lock = lock_data.get('forced_planning_lock', {})
         
-        # Convertir en JSON pour PostgreSQL
-        lock_json = json.dumps(forced_planning_lock) if forced_planning_lock else None
+        # Supprimer les anciens verrous pour ce chantier
+        cur.execute("DELETE FROM verrous_planification WHERE chantier_id = %s", (chantier_id,))
         
-        # Mettre à jour le chantier avec les nouveaux verrous
-        cur.execute("""
-            UPDATE chantiers 
-            SET forced_planning_lock = %s 
-            WHERE id = %s
-        """, (lock_json, chantier_id))
+        # Insérer les nouveaux verrous
+        inserted_count = 0
+        for semaine, verrou_info in forced_planning_lock.items():
+            if isinstance(verrou_info, dict):
+                preparateur = verrou_info.get('preparateur', '')
+                minutes = verrou_info.get('minutes', 0)
+            else:
+                # Format legacy : juste les minutes
+                preparateur = ''
+                minutes = verrou_info
+            
+            if minutes > 0:  # Ne stocker que les verrous avec des minutes
+                cur.execute("""
+                    INSERT INTO verrous_planification (chantier_id, semaine, preparateur_nom, minutes)
+                    VALUES (%s, %s, %s, %s)
+                """, (chantier_id, semaine, preparateur, minutes))
+                inserted_count += 1
         
         conn.commit()
-        close_db_connection(conn)
 
         return {
             "status": "✅ Verrous de planification mis à jour",
             "chantier_id": chantier_id,
-            "forced_planning_lock": forced_planning_lock
+            "verrous_inserted": inserted_count
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 @router.delete("/chantiers/{chantier_id}/forced-planning-lock")
 def clear_forced_planning_lock(chantier_id: str):
     """Supprimer tous les verrous de planification forcée d'un chantier"""
+    conn = None
     try:
-        
         conn = get_db_connection()
         cur = conn.cursor()
         
@@ -805,31 +744,36 @@ def clear_forced_planning_lock(chantier_id: str):
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Chantier non trouvé")
         
-        # Supprimer tous les verrous
-        cur.execute("""
-            UPDATE chantiers 
-            SET forced_planning_lock = NULL 
-            WHERE id = %s
-        """, (chantier_id,))
+        # Supprimer tous les verrous de ce chantier
+        cur.execute("DELETE FROM verrous_planification WHERE chantier_id = %s", (chantier_id,))
+        deleted_count = cur.rowcount
         
         conn.commit()
-        close_db_connection(conn)
 
         return {
             "status": "✅ Verrous de planification supprimés",
-            "chantier_id": chantier_id
+            "chantier_id": chantier_id,
+            "verrous_deleted": deleted_count
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
-
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 @router.put("/forced-planning-lock")
 def sync_forced_planning_lock_put(lock_data: Dict[str, Any]):
     """Synchroniser les verrous de planification forcée depuis le client (méthode PUT)"""
+    conn = None
     try:
-        import json
-        
         chantier_id = lock_data.get('chantier_id')
         forced_planning_lock = lock_data.get('forced_planning_lock', {})
         
@@ -837,6 +781,7 @@ def sync_forced_planning_lock_put(lock_data: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="chantier_id requis")
         
         conn = get_db_connection()
+        ensure_chantiers_tables(conn)
         cur = conn.cursor()
         
         # Vérifier que le chantier existe
@@ -844,27 +789,47 @@ def sync_forced_planning_lock_put(lock_data: Dict[str, Any]):
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Chantier non trouvé")
         
-        # Convertir en JSON pour PostgreSQL
-        lock_json = json.dumps(forced_planning_lock) if forced_planning_lock else None
+        # Supprimer les anciens verrous pour ce chantier
+        cur.execute("DELETE FROM verrous_planification WHERE chantier_id = %s", (chantier_id,))
         
-        # Mettre à jour les verrous
-        cur.execute("""
-            UPDATE chantiers 
-            SET forced_planning_lock = %s 
-            WHERE id = %s
-        """, (lock_json, chantier_id))
+        # Insérer les nouveaux verrous
+        inserted_count = 0
+        for semaine, verrou_info in forced_planning_lock.items():
+            if isinstance(verrou_info, dict):
+                preparateur = verrou_info.get('preparateur', '')
+                minutes = verrou_info.get('minutes', 0)
+            else:
+                # Format legacy : juste les minutes
+                preparateur = ''
+                minutes = verrou_info
+            
+            if minutes > 0:  # Ne stocker que les verrous avec des minutes
+                cur.execute("""
+                    INSERT INTO verrous_planification (chantier_id, semaine, preparateur_nom, minutes)
+                    VALUES (%s, %s, %s, %s)
+                """, (chantier_id, semaine, preparateur, minutes))
+                inserted_count += 1
         
         conn.commit()
-        close_db_connection(conn)
 
         return {
             "status": "✅ Verrous synchronisés",
             "chantier_id": chantier_id,
-            "locked_segments": len(forced_planning_lock)
+            "verrous_inserted": inserted_count
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
+        if conn:
+            conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
+    finally:
+        if conn:
+            try:
+                close_db_connection(conn)
+            except:
+                pass
 
 
 @router.post("/forced-planning-lock")
@@ -872,8 +837,6 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
     """Synchroniser les verrous de planification forcée depuis le client (méthode POST)"""
     conn = None
     try:
-        import json
-        
         chantier_id = lock_data.get('chantier_id')
         forced_planning_lock = lock_data.get('forced_planning_lock', {})
         
@@ -881,59 +844,50 @@ def sync_forced_planning_lock(lock_data: Dict[str, Any]):
             raise HTTPException(status_code=400, detail="chantier_id requis")
         
         conn = get_db_connection()
+        ensure_chantiers_tables(conn)
         cur = conn.cursor()
-        
-        # Migration automatique : Vérifier si la colonne forced_planning_lock existe
-        cur.execute("""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name = 'chantiers' AND column_name = 'forced_planning_lock'
-        """)
-        column_exists = cur.fetchone()
-        
-        if not column_exists:
-            print("🔧 Migration automatique: Ajout de la colonne forced_planning_lock")
-            # Ajouter la colonne forced_planning_lock si elle n'existe pas
-            cur.execute("""
-                ALTER TABLE chantiers 
-                ADD COLUMN forced_planning_lock JSONB DEFAULT NULL
-            """)
-            
-            # Créer l'index GIN pour améliorer les performances
-            cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_chantiers_forced_planning_lock 
-                ON chantiers USING GIN (forced_planning_lock)
-            """)
-            
-            conn.commit()
-            print("✅ Migration automatique réussie")
         
         # Vérifier que le chantier existe
         cur.execute("SELECT id FROM chantiers WHERE id = %s", (chantier_id,))
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Chantier non trouvé")
         
-        # Convertir en JSON pour PostgreSQL
-        lock_json = json.dumps(forced_planning_lock) if forced_planning_lock else None
+        # Supprimer les anciens verrous pour ce chantier
+        cur.execute("DELETE FROM verrous_planification WHERE chantier_id = %s", (chantier_id,))
         
-        # Mettre à jour les verrous
-        cur.execute("""
-            UPDATE chantiers 
-            SET forced_planning_lock = %s 
-            WHERE id = %s
-        """, (lock_json, chantier_id))
+        # Insérer les nouveaux verrous
+        inserted_count = 0
+        for semaine, verrou_info in forced_planning_lock.items():
+            if isinstance(verrou_info, dict):
+                preparateur = verrou_info.get('preparateur', '')
+                minutes = verrou_info.get('minutes', 0)
+            else:
+                # Format legacy : juste les minutes
+                preparateur = ''
+                minutes = verrou_info
+            
+            if minutes > 0:  # Ne stocker que les verrous avec des minutes
+                cur.execute("""
+                    INSERT INTO verrous_planification (chantier_id, semaine, preparateur_nom, minutes)
+                    VALUES (%s, %s, %s, %s)
+                """, (chantier_id, semaine, preparateur, minutes))
+                inserted_count += 1
         
         conn.commit()
         
-        print(f"✅ Verrous synchronisés pour {chantier_id}: {len(forced_planning_lock)} segments")
+        print(f"✅ Verrous synchronisés pour {chantier_id}: {inserted_count} verrous")
         
         return {
             "status": "✅ Verrous de planification forcée synchronisés",
             "chantier_id": chantier_id,
-            "forced_planning_lock": forced_planning_lock
+            "verrous_inserted": inserted_count
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
+        if conn:
+            conn.rollback()
         print(f"🚨 Erreur POST /forced-planning-lock: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
@@ -1167,11 +1121,16 @@ def delete_chantier(chantier_id: str):
         # 2. Supprimer les planifications
         cur.execute("DELETE FROM planifications WHERE chantier_id = %s", (chantier_id,))
         planifications_deleted = cur.rowcount
+
+        # 3. Supprimer le verrou
+        cur.execute("DELETE FROM verrous_planification WHERE chantier_id = %s", (chantier_id,))
+        verrous_deleted = cur.rowcount
         
-        # 3. Supprimer le chantier
+        # 4. Supprimer le chantier
         cur.execute("DELETE FROM chantiers WHERE id = %s", (chantier_id,))
         chantier_deleted = cur.rowcount
-        
+
+
         conn.commit()
         
         return {
@@ -1229,11 +1188,16 @@ def delete_all_chantiers():
         # 2. Supprimer toutes les planifications
         cur.execute("DELETE FROM planifications")
         planifications_deleted = cur.rowcount
-        
-        # 3. Supprimer tous les chantiers
+
+        # 3. Supprimer les verrous
+        cur.execute("DELETE FROM verrous_planification")
+        verrous_deleted = cur.rowcount
+
+        # 4. Supprimer tous les chantiers
         cur.execute("DELETE FROM chantiers")
         chantiers_deleted = cur.rowcount
-        
+
+
         conn.commit()
         
         return {
@@ -1244,7 +1208,12 @@ def delete_all_chantiers():
             "status": "success",
             "message": f"Tous les chantiers supprimés ({chantiers_deleted} chantiers, {planifications_deleted} planifications et {soldes_deleted} soldes)"
         }
-        
+    
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+
     except Exception as e:
         if conn:
             conn.rollback()
