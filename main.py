@@ -158,7 +158,12 @@ except ImportError:
     grille_semaine_router = None
     GRILLE_SEMAINE_AVAILABLE = False
 
-
+try:
+    from disponibilite import router as disponibilites_router
+    DISPONIBILITES_AVAILABLE = True
+except ImportError:
+    disponibilites_router = None
+    DISPONIBILITES_AVAILABLE = False
 
 
 
@@ -423,6 +428,9 @@ if BETA_API_AVAILABLE and beta_api_router:
 if GRILLE_SEMAINE_AVAILABLE and grille_semaine_router:
     app.include_router(grille_semaine_router, prefix="", tags=["Grille Semaine"])
 
+if DISPONIBILITES_AVAILABLE and disponibilites_router:
+    app.include_router(disponibilites_router, prefix="", tags=["Disponibilités"])
+    
 @app.get("/")
 def read_root():
     """Point d'entrée de l'API"""
