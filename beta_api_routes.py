@@ -1198,15 +1198,35 @@ def delete_all_chantiers():
     """Supprimer tous les chantiers et toutes leurs données associées"""
     conn = None
     try:
-        # ...existing code...
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # 1. Supprimer tous les soldes
+        cur.execute("DELETE FROM soldes")
+        soldes_deleted = cur.rowcount
+        
+        # 2. Supprimer toutes les planifications
+        cur.execute("DELETE FROM planifications")
+        planifications_deleted = cur.rowcount
+        
+        # 3. Supprimer tous les verrous
+        cur.execute("DELETE FROM verrous_planification")
+        verrous_deleted = cur.rowcount
+        
+        # 4. Supprimer tous les chantiers
+        cur.execute("DELETE FROM chantiers")
+        chantiers_deleted = cur.rowcount
+        
+        conn.commit()
         
         return {
             "deleted": True,
             "chantiers_deleted": chantiers_deleted,
             "planifications_deleted": planifications_deleted,
             "soldes_deleted": soldes_deleted,
+            "verrous_deleted": verrous_deleted,
             "status": "success",
-            "message": f"Tous les chantiers supprimés ({chantiers_deleted} chantiers, {planifications_deleted} planifications et {soldes_deleted} soldes)"
+            "message": f"Tous les chantiers supprimés ({chantiers_deleted} chantiers, {planifications_deleted} planifications, {soldes_deleted} soldes et {verrous_deleted} verrous)"
         }
     
     except HTTPException:
