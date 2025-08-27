@@ -278,81 +278,176 @@ def calculer_disponibilites_preparateur(preparateur_nom: str, semaine: str, conn
 @router.post("/disponibilites/recalculer")
 def recalculer_et_sauvegarder_disponibilites(
     semaine: Optional[str] = None, 
+    semaines: Optional[List[str]] = None,  # ✅ NOUVEAU : accepter plusieurs semaines
     preparateurs: Optional[List[str]] = None
 ):
-    """POST : Recalculer les disponibilités avec le nouveau format standard et les sauvegarder"""
+    """POST : Recalculer les disponibilités - accepte une seule semaine OU plusieurs semaines"""
     conn = None
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         
-        if not semaine:
-            semaine = semaine_courante()
+        # ✅ DÉTERMINER LES SEMAINES À TRAITER
+        semaines_a_traiter = []
         
-        if not valider_format_semaine(semaine):
-            raise HTTPException(status_code=400, detail="Format de semaine invalide. Utilisez YYYY-WXX (ex: 2025-W35)")
+        if semaines:
+            # Mode multi-semaines
+            semaines_a_traiter = semaines
+        elif semaine:
+            # Mode semaine unique
+            semaines_a_traiter = [semaine]
+        else:
+            # Mode par défaut : semaine courante
+            semaines_a_traiter = [semaine_courante()]
         
-        # ❌ SUPPRIMER CETTE PARTIE (utiliser la table existante de main.py)
-        # cur.execute("""CREATE TABLE IF NOT EXISTS disponibilites ...""")
+        # ✅ VALIDATION DES FORMATS
+        for sem in semaines_a_traiter:
+            if not valider_format_semaine(sem):
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Format de semaine invalide: {sem}. Utilisez YYYY-WXX (ex: 2025-W35)"
+                )
         
+        # ✅ VÉRIFICATION DES TABLES REQUISES
+        required_tables = ['horaires_preparateurs', 'planifications_etiquettes', 'disponibilites']
+        cur.execute(f"""
+            SELECT table_name FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name = ANY(%s)
+        """, (required_tables,))
+        
+        existing_tables = [row[0] for row in cur.fetchall()]
+        missing_tables = [t for t in required_tables if t not in existing_tables]
+        
+        if missing_tables:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "Tables de base de données manquantes",
+                    "missing_tables": missing_tables,
+                    "solution": "Utilisez l'endpoint POST /admin/create-all-tables pour créer les tables"
+                }
+            )
+        
+        # ✅ OBTENIR LES PRÉPARATEURS
         if not preparateurs:
             cur.execute("SELECT DISTINCT preparateur_nom FROM horaires_preparateurs")
             preparateurs = [row[0] for row in cur.fetchall()]
         
-        resultats_sauvegarde = []
+        if not preparateurs:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "Aucun préparateur trouvé",
+                    "message": "Aucun préparateur n'a d'horaires définis"
+                }
+            )
         
-        for preparateur_nom in preparateurs:
-            try:
-                resultat_calcul = calculer_disponibilites_preparateur(preparateur_nom, semaine, conn)
-                
-                
-                timestamp_iso = datetime.now().isoformat()
-                # Sauvegarder avec UPSERT (INSERT ON CONFLICT)
-                cur.execute("""
-                    INSERT INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (preparateur_nom, semaine) 
-                    DO UPDATE SET 
-                        minutes = EXCLUDED.minutes,
-                        updatedAt = EXCLUDED.updatedAt
-                """, (
-                    preparateur_nom,
-                    semaine,
-                    resultat_calcul['disponibilite_minutes'],
-                    timestamp_iso
-                ))
-                
-                resultats_sauvegarde.append({
-                    "preparateur": preparateur_nom,
-                    "semaine": semaine,
-                    "disponibilite_minutes": resultat_calcul['disponibilite_minutes'],
-                    "disponibilite_heures": resultat_calcul['disponibilite_heures'],
-                    "total_horaires_heures": resultat_calcul['total_horaires_heures'],
-                    "total_occupees_heures": resultat_calcul['total_occupees_heures'],
-                    "status": "✅ Sauvegardé"
-                })
-                
-            except Exception as e:
-                resultats_sauvegarde.append({
-                    "preparateur": preparateur_nom,
-                    "semaine": semaine,
-                    "status": "❌ Erreur",
-                    "error": str(e)
-                })
+        # ✅ TRAITEMENT EN BATCH : TOUTES LES SEMAINES D'UN COUP
+        print(f"🔄 Traitement en batch: {len(semaines_a_traiter)} semaines × {len(preparateurs)} préparateurs")
+        
+        resultats_par_semaine = {}
+        batch_upserts = []  # Pour faire tous les UPSERT en une fois
+        timestamp_iso = datetime.now().isoformat()
+        
+        # ✅ CALCULER TOUTES LES COMBINAISONS
+        for semaine_courante in semaines_a_traiter:
+            resultats_sauvegarde = []
+            
+            for preparateur_nom in preparateurs:
+                try:
+                    resultat_calcul = calculer_disponibilites_preparateur(preparateur_nom, semaine_courante, conn)
+                    
+                    # Préparer les données pour le batch UPSERT
+                    batch_upserts.append((
+                        preparateur_nom,
+                        semaine_courante,
+                        resultat_calcul['disponibilite_minutes'],
+                        timestamp_iso
+                    ))
+                    
+                    resultats_sauvegarde.append({
+                        "preparateur": preparateur_nom,
+                        "semaine": semaine_courante,
+                        "disponibilite_minutes": resultat_calcul['disponibilite_minutes'],
+                        "disponibilite_heures": resultat_calcul['disponibilite_heures'],
+                        "total_horaires_heures": resultat_calcul['total_horaires_heures'],
+                        "total_occupees_heures": resultat_calcul['total_occupees_heures'],
+                        "status": "✅ Calculé"
+                    })
+                    
+                except Exception as e:
+                    resultats_sauvegarde.append({
+                        "preparateur": preparateur_nom,
+                        "semaine": semaine_courante,
+                        "status": "❌ Erreur",
+                        "error": str(e)
+                    })
+            
+            resultats_par_semaine[semaine_courante] = {
+                "semaine": semaine_courante,
+                "resultats": resultats_sauvegarde,
+                "nb_preparateurs": len(preparateurs),
+                "nb_reussites": len([r for r in resultats_sauvegarde if r.get("status") == "✅ Calculé"])
+            }
+        
+        # ✅ SAUVEGARDER TOUT EN UNE SEULE TRANSACTION
+        if batch_upserts:
+            print(f"💾 Sauvegarde en batch de {len(batch_upserts)} disponibilités...")
+            
+            cur.executemany("""
+                INSERT INTO disponibilites (preparateur_nom, semaine, minutes, updatedAt)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (preparateur_nom, semaine) 
+                DO UPDATE SET 
+                    minutes = EXCLUDED.minutes,
+                    updatedAt = EXCLUDED.updatedAt
+            """, batch_upserts)
+            
+            # Marquer comme sauvegardé
+            for semaine_key, semaine_data in resultats_par_semaine.items():
+                for resultat in semaine_data["resultats"]:
+                    if resultat.get("status") == "✅ Calculé":
+                        resultat["status"] = "✅ Sauvegardé"
         
         conn.commit()
         
-        # Statistiques finales...
-        return {
-            "status": "✅ Disponibilités recalculées et sauvegardées dans la table principale",
-            "semaine": semaine,
-            "resultats": resultats_sauvegarde
-        }
+        # ✅ STATISTIQUES FINALES
+        total_calculs = sum(len(s["resultats"]) for s in resultats_par_semaine.values())
+        total_reussites = sum(s["nb_reussites"] for s in resultats_par_semaine.values())
         
+        print(f"✅ Batch terminé: {total_reussites}/{total_calculs} calculs réussis sur {len(semaines_a_traiter)} semaines")
+        
+        # ✅ RETOUR ADAPTATIF selon le mode
+        if len(semaines_a_traiter) == 1:
+            # Mode semaine unique : format de retour compatible
+            semaine_unique = list(resultats_par_semaine.values())[0]
+            return {
+                "status": "✅ Disponibilités recalculées et sauvegardées",
+                "semaine": semaine_unique["semaine"],
+                "resultats": semaine_unique["resultats"],
+                "summary": f"{semaine_unique['nb_reussites']}/{semaine_unique['nb_preparateurs']} préparateurs traités"
+            }
+        else:
+            # Mode multi-semaines : format détaillé
+            return {
+                "status": "✅ Disponibilités recalculées en batch",
+                "mode": "multi_semaines",
+                "nb_semaines": len(semaines_a_traiter),
+                "nb_calculs_total": total_calculs,
+                "nb_reussites_total": total_reussites,
+                "resultats_par_semaine": resultats_par_semaine,
+                "summary": f"{total_reussites}/{total_calculs} calculs réussis sur {len(semaines_a_traiter)} semaines"
+            }
+        
+    except HTTPException:
+        # Re-lever les HTTPException sans modification
+        raise
     except Exception as e:
         if conn:
             conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
+        print(f"❌ Erreur dans recalculer_et_sauvegarder_disponibilites: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur serveur: {str(e)}")
     finally:
         if conn:
             close_db_connection(conn)
