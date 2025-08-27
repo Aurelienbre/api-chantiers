@@ -59,8 +59,8 @@ def init_connection_pool():
             print("⚠️ Aucun module de pool disponible - pool désactivé")
             connection_pool = None
 
-def get_db_connection(auto_create_tables=False):
-    """Obtenir une connexion du pool (rétrocompatible)"""
+def get_db_connection():  # ✅ SUPPRIMER le paramètre auto_create_tables complètement
+    """Obtenir une connexion du pool (SANS création automatique de tables)"""
     global connection_pool
     database_url = os.environ.get('DATABASE_URL')
     
@@ -98,14 +98,9 @@ def get_db_connection(auto_create_tables=False):
                 conn._pool_type = 'direct_psycopg2'
             except ImportError:
                 raise Exception("Aucun module psycopg disponible")
-        
-    # Créer automatiquement les tables si demandé (APRÈS avoir obtenu la connexion)
-    if auto_create_tables and conn:
-        try:
-            ensure_chantiers_tables(conn)
-            ensure_etiquettes_grille_tables(conn)
-        except Exception as e:
-            print(f"⚠️ Erreur création auto des tables: {e}")
+    
+    # ✅ SUPPRESSION COMPLÈTE : Plus aucune création automatique de tables
+    # Les tables ne sont créées que manuellement via /admin/create-all-tables
     
     return conn
 
