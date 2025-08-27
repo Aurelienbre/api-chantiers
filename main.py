@@ -59,7 +59,7 @@ def init_connection_pool():
             print("⚠️ Aucun module de pool disponible - pool désactivé")
             connection_pool = None
 
-def get_db_connection(auto_create_tables=True):
+def get_db_connection(auto_create_tables=False):
     """Obtenir une connexion du pool (rétrocompatible)"""
     global connection_pool
     database_url = os.environ.get('DATABASE_URL')
