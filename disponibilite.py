@@ -186,13 +186,36 @@ def calculer_disponibilites_preparateur(preparateur_nom: str, semaine: str, conn
     
     etiquettes_planifiees = cur.fetchall()
     
-    # 5. Calculer les minutes occupées par les étiquettes
-    minutes_occupees_par_jour = {}
-    total_minutes_occupees = 0
+    # 5. ✅ NOUVELLE LOGIQUE : Grouper les étiquettes par jour et fusionner les créneaux
+    def fusionner_creneaux(creneaux):
+        """Fusionner les créneaux qui se chevauchent ou sont contigus"""
+        if not creneaux:
+            return []
+        
+        # Trier par heure de début
+        creneaux_tries = sorted(creneaux, key=lambda x: x[0])
+        
+        fusionnes = [creneaux_tries[0]]
+        
+        for debut, fin in creneaux_tries[1:]:
+            derniere_fin = fusionnes[-1][1]
+            
+            # Si le nouveau créneau chevauche ou est contigu au précédent
+            if debut <= derniere_fin:
+                # Étendre le dernier créneau fusionné
+                fusionnes[-1] = (fusionnes[-1][0], max(fin, derniere_fin))
+            else:
+                # Nouveau créneau séparé
+                fusionnes.append((debut, fin))
+        
+        return fusionnes
+    
+    etiquettes_par_jour = {}
     etiquettes_details = []
     
+    # Grouper les étiquettes par jour
     for date_jour, heure_debut, heure_fin, preparateurs, type_activite, description in etiquettes_planifiees:
-        # Vérifier que le préparateur est bien dans la liste (éviter les faux positifs)
+        # Vérifier que le préparateur est bien dans la liste
         preparateurs_list = [p.strip() for p in preparateurs.split(',')]
         if preparateur_nom not in preparateurs_list:
             continue
@@ -205,29 +228,18 @@ def calculer_disponibilites_preparateur(preparateur_nom: str, semaine: str, conn
                 break
         
         if not jour_semaine or jour_semaine not in horaires_par_jour:
-            continue  # Pas d'horaires définis pour ce jour
+            continue
         
         # Convertir en minutes
         debut_etiquette = heure_debut.hour * 60 + heure_debut.minute
         fin_etiquette = heure_fin.hour * 60 + heure_fin.minute
         
-        # Calculer l'intersection avec les horaires de travail
-        minutes_occupees_jour = 0
+        # Ajouter à la liste des étiquettes du jour
+        if jour_semaine not in etiquettes_par_jour:
+            etiquettes_par_jour[jour_semaine] = []
         
-        for horaire in horaires_par_jour[jour_semaine]:
-            # Calculer l'intersection entre l'étiquette et l'horaire de travail
-            debut_intersection = max(debut_etiquette, horaire['debut'])
-            fin_intersection = min(fin_etiquette, horaire['fin'])
-            
-            if debut_intersection < fin_intersection:
-                minutes_occupees_jour += fin_intersection - debut_intersection
+        etiquettes_par_jour[jour_semaine].append((debut_etiquette, fin_etiquette))
         
-        if jour_semaine not in minutes_occupees_par_jour:
-            minutes_occupees_par_jour[jour_semaine] = 0
-        minutes_occupees_par_jour[jour_semaine] += minutes_occupees_jour
-        total_minutes_occupees += minutes_occupees_jour
-        
-        # Détails pour debug
         etiquettes_details.append({
             "type_activite": type_activite,
             "description": description,
@@ -236,14 +248,36 @@ def calculer_disponibilites_preparateur(preparateur_nom: str, semaine: str, conn
             "heure_debut": str(heure_debut),
             "heure_fin": str(heure_fin),
             "duree_etiquette_minutes": fin_etiquette - debut_etiquette,
-            "duree_intersection_minutes": minutes_occupees_jour
         })
     
-    # 6. Calculer la disponibilité finale
+    # 6. ✅ CALCULER LES MINUTES OCCUPÉES AVEC FUSION DES CRÉNEAUX
+    minutes_occupees_par_jour = {}
+    total_minutes_occupees = 0
+    
+    for jour, etiquettes_jour in etiquettes_par_jour.items():
+        # Fusionner les créneaux qui se chevauchent
+        creneaux_fusionnes = fusionner_creneaux(etiquettes_jour)
+        
+        # Calculer l'intersection avec les horaires de travail
+        minutes_occupees_jour = 0
+        
+        for debut_etiquette, fin_etiquette in creneaux_fusionnes:
+            for horaire in horaires_par_jour[jour]:
+                # Intersection entre étiquette fusionnée et horaire de travail
+                debut_intersection = max(debut_etiquette, horaire['debut'])
+                fin_intersection = min(fin_etiquette, horaire['fin'])
+                
+                if debut_intersection < fin_intersection:
+                    minutes_occupees_jour += fin_intersection - debut_intersection
+        
+        minutes_occupees_par_jour[jour] = minutes_occupees_jour
+        total_minutes_occupees += minutes_occupees_jour
+    
+    # 7. Calculer la disponibilité finale
     disponibilite_minutes = total_minutes_horaires - total_minutes_occupees
     disponibilite_heures = round(disponibilite_minutes / 60, 2)
     
-    # 7. Détail par jour
+    # 8. Détail par jour
     detail_par_jour = {}
     for jour, horaires in horaires_par_jour.items():
         total_jour = sum(h['duree'] for h in horaires)
