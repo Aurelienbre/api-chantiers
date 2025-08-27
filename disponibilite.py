@@ -584,20 +584,21 @@ def recalculer_et_sauvegarder_disponibilites(
             try:
                 resultat_calcul = calculer_disponibilites_preparateur(preparateur_nom, semaine, conn)
                 
-                # ✅ ADAPTER au format de la vraie table (TIMESTAMP au lieu de VARCHAR)
                 
+                timestamp_iso = datetime.now().isoformat()
                 # Sauvegarder avec UPSERT (INSERT ON CONFLICT)
                 cur.execute("""
                     INSERT INTO disponibilites (preparateur_nom, semaine, minutes, "updatedAt")
-                    VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT (preparateur_nom, semaine) 
                     DO UPDATE SET 
                         minutes = EXCLUDED.minutes,
-                        "updatedAt" = CURRENT_TIMESTAMP
+                        "updatedAt" = EXCLUDED."updatedAt"
                 """, (
                     preparateur_nom,
                     semaine,
-                    resultat_calcul['disponibilite_minutes']
+                    resultat_calcul['disponibilite_minutes'],
+                    timestamp_iso
                 ))
                 
                 resultats_sauvegarde.append({
@@ -784,4 +785,5 @@ def get_disponibilites_sauvegardees(semaine: str):
     finally:
         if conn:
             close_db_connection(conn)
+
 
