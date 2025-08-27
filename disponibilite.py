@@ -571,14 +571,14 @@ def recalculer_et_sauvegarder_disponibilites(
         if not valider_format_semaine(semaine):
             raise HTTPException(status_code=400, detail="Format de semaine invalide. Utilisez YYYY-WXX (ex: 2025-W35)")
         
-        # Vérifier/créer la table disponibilites si nécessaire
+        # Vérifier/créer la table disponibilites si nécessaire (avec le bon format)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS disponibilites (
                 id SERIAL PRIMARY KEY,
                 preparateur_nom VARCHAR(255) NOT NULL,
-                semaine VARCHAR(10) NOT NULL,
+                semaine VARCHAR(50) NOT NULL,
                 minutes INTEGER NOT NULL DEFAULT 0,
-                "updatedAt" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                "updatedAt" VARCHAR(100) DEFAULT '',
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 
                 UNIQUE(preparateur_nom, semaine)
@@ -599,7 +599,10 @@ def recalculer_et_sauvegarder_disponibilites(
             try:
                 resultat_calcul = calculer_disponibilites_preparateur(preparateur_nom, semaine, conn)
                 
-                # Sauvegarder avec le nouveau format
+                # ✅ MISE À JOUR avec format ISO 8601 pour updatedAt
+                timestamp_iso = datetime.now().isoformat()
+                
+                # Sauvegarder avec UPSERT (INSERT ON CONFLICT)
                 cur.execute("""
                     INSERT INTO disponibilites (preparateur_nom, semaine, minutes, "updatedAt")
                     VALUES (%s, %s, %s, %s)
@@ -609,23 +612,26 @@ def recalculer_et_sauvegarder_disponibilites(
                         "updatedAt" = EXCLUDED."updatedAt"
                 """, (
                     preparateur_nom,
-                    semaine,
+                    semaine,  # Format ISO 8601 : YYYY-WXX
                     resultat_calcul['disponibilite_minutes'],
-                    datetime.now().isoformat()
+                    timestamp_iso  # Format ISO 8601 : 2025-08-27T14:30:45.123456
                 ))
                 
                 resultats_sauvegarde.append({
                     "preparateur": preparateur_nom,
+                    "semaine": semaine,
                     "disponibilite_minutes": resultat_calcul['disponibilite_minutes'],
                     "disponibilite_heures": resultat_calcul['disponibilite_heures'],
                     "total_horaires_heures": resultat_calcul['total_horaires_heures'],
                     "total_occupees_heures": resultat_calcul['total_occupees_heures'],
+                    "updated_at": timestamp_iso,
                     "status": "✅ Sauvegardé"
                 })
                 
             except Exception as e:
                 resultats_sauvegarde.append({
                     "preparateur": preparateur_nom,
+                    "semaine": semaine,
                     "status": "❌ Erreur",
                     "error": str(e)
                 })
@@ -638,7 +644,8 @@ def recalculer_et_sauvegarder_disponibilites(
         
         return {
             "status": "✅ Disponibilités recalculées et sauvegardées",
-            "format_semaine": "Standard YYYY-WXX",
+            "format_semaine": "Standard ISO 8601 (YYYY-WXX)",
+            "format_timestamp": "ISO 8601",
             "semaine": semaine,
             "timestamp": datetime.now().isoformat(),
             "nb_preparateurs": len(preparateurs),
@@ -660,7 +667,6 @@ def recalculer_et_sauvegarder_disponibilites(
     finally:
         if conn:
             close_db_connection(conn)
-
 # ========================================================================
 # ROUTES DE COMPARAISON ANCIEN/NOUVEAU SYSTÈME
 # ========================================================================
