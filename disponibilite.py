@@ -571,23 +571,8 @@ def recalculer_et_sauvegarder_disponibilites(
         if not valider_format_semaine(semaine):
             raise HTTPException(status_code=400, detail="Format de semaine invalide. Utilisez YYYY-WXX (ex: 2025-W35)")
         
-        # Vérifier/créer la table disponibilites si nécessaire (avec le bon format)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS disponibilites (
-                id SERIAL PRIMARY KEY,
-                preparateur_nom VARCHAR(255) NOT NULL,
-                semaine VARCHAR(50) NOT NULL,
-                minutes INTEGER NOT NULL DEFAULT 0,
-                "updatedAt" VARCHAR(100) DEFAULT '',
-                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                
-                UNIQUE(preparateur_nom, semaine)
-            )
-        """)
-        
-        # Index pour les performances
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_disponibilites_semaine ON disponibilites (semaine)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_disponibilites_preparateur ON disponibilites (preparateur_nom)")
+        # ❌ SUPPRIMER CETTE PARTIE (utiliser la table existante de main.py)
+        # cur.execute("""CREATE TABLE IF NOT EXISTS disponibilites ...""")
         
         if not preparateurs:
             cur.execute("SELECT DISTINCT preparateur_nom FROM horaires_preparateurs")
@@ -599,22 +584,20 @@ def recalculer_et_sauvegarder_disponibilites(
             try:
                 resultat_calcul = calculer_disponibilites_preparateur(preparateur_nom, semaine, conn)
                 
-                # ✅ MISE À JOUR avec format ISO 8601 pour updatedAt
-                timestamp_iso = datetime.now().isoformat()
+                # ✅ ADAPTER au format de la vraie table (TIMESTAMP au lieu de VARCHAR)
                 
                 # Sauvegarder avec UPSERT (INSERT ON CONFLICT)
                 cur.execute("""
                     INSERT INTO disponibilites (preparateur_nom, semaine, minutes, "updatedAt")
-                    VALUES (%s, %s, %s, %s)
+                    VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
                     ON CONFLICT (preparateur_nom, semaine) 
                     DO UPDATE SET 
                         minutes = EXCLUDED.minutes,
-                        "updatedAt" = EXCLUDED."updatedAt"
+                        "updatedAt" = CURRENT_TIMESTAMP
                 """, (
                     preparateur_nom,
-                    semaine,  # Format ISO 8601 : YYYY-WXX
-                    resultat_calcul['disponibilite_minutes'],
-                    timestamp_iso  # Format ISO 8601 : 2025-08-27T14:30:45.123456
+                    semaine,
+                    resultat_calcul['disponibilite_minutes']
                 ))
                 
                 resultats_sauvegarde.append({
@@ -624,7 +607,6 @@ def recalculer_et_sauvegarder_disponibilites(
                     "disponibilite_heures": resultat_calcul['disponibilite_heures'],
                     "total_horaires_heures": resultat_calcul['total_horaires_heures'],
                     "total_occupees_heures": resultat_calcul['total_occupees_heures'],
-                    "updated_at": timestamp_iso,
                     "status": "✅ Sauvegardé"
                 })
                 
@@ -638,32 +620,17 @@ def recalculer_et_sauvegarder_disponibilites(
         
         conn.commit()
         
-        # Statistiques finales
-        nb_succes = sum(1 for r in resultats_sauvegarde if r.get("status") == "✅ Sauvegardé")
-        total_dispo_minutes = sum(r.get('disponibilite_minutes', 0) for r in resultats_sauvegarde if 'disponibilite_minutes' in r)
-        
+        # Statistiques finales...
         return {
-            "status": "✅ Disponibilités recalculées et sauvegardées",
-            "format_semaine": "Standard ISO 8601 (YYYY-WXX)",
-            "format_timestamp": "ISO 8601",
+            "status": "✅ Disponibilités recalculées et sauvegardées dans la table principale",
             "semaine": semaine,
-            "timestamp": datetime.now().isoformat(),
-            "nb_preparateurs": len(preparateurs),
-            "nb_succes": nb_succes,
-            "nb_erreurs": sum(1 for r in resultats_sauvegarde if "error" in r),
-            "total_disponibilites_minutes": total_dispo_minutes,
-            "total_disponibilites_heures": round(total_dispo_minutes / 60, 2),
             "resultats": resultats_sauvegarde
         }
         
-    except ValueError as e:
-        if conn:
-            conn.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         if conn:
             conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la sauvegarde: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erreur: {str(e)}")
     finally:
         if conn:
             close_db_connection(conn)
@@ -817,3 +784,4 @@ def get_disponibilites_sauvegardees(semaine: str):
     finally:
         if conn:
             close_db_connection(conn)
+
