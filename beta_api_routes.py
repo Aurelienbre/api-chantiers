@@ -427,7 +427,7 @@ def update_planification(planif: Dict[str, Any]):
                 now = now - timedelta(days=1)
             
             year, week_num, _ = now.isocalendar()
-            current_week_key = f"{year}-W{week_num:02d}-1"
+            current_week_key = f"{year}-W{week_num:02d}"
             
             # Supprimer seulement les planifications >= semaine courante
             cur.execute("""
