@@ -506,6 +506,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Inclure les routers seulement s'ils sont disponibles
+if BETA_API_AVAILABLE and beta_api_router:
+    app.include_router(beta_api_router, prefix="", tags=["Beta-API"])
+
+if GRILLE_SEMAINE_AVAILABLE and grille_semaine_router:
+    app.include_router(grille_semaine_router, prefix="", tags=["Grille Semaine"])
+
+if DISPONIBILITES_AVAILABLE and disponibilites_router:
+    app.include_router(disponibilites_router, prefix="", tags=["Disponibilités"])
+
+if TEXTE_ETIQUETTE_AVAILABLE and texte_etiquette_router:
+    app.include_router(texte_etiquette_router, prefix="", tags=["Templates et Texte Étiquettes"])
     
 @app.get("/")
 def read_root():
