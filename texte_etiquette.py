@@ -11,11 +11,6 @@ from fastapi import APIRouter, HTTPException
 from typing import Dict, Optional, Any, List
 from datetime import datetime
 from main import get_db_connection, close_db_connection
-import psycopg2
-
-# Configuration du logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # Créer le router pour les routes de texte d'étiquettes
 router = APIRouter(
@@ -80,12 +75,11 @@ ________________________________________
             """, ('Réunion', template_content, 'Template pour les réunions avec ordre du jour et suivi'))
         
         conn.commit()
-        logger.info("Table text_templates créée/vérifiée")
+        print("✅ Table text_templates créée/vérifiée")
         
-    except psycopg2.Error as e:
-        logger.error(f"Erreur lors de la création de la table text_templates: {e}")
-        conn.rollback()
-        raise
+    except Exception as e:
+        print(f"❌ Erreur lors de la création/vérification des templates par défaut: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
 
 def ensure_etiquettes_texte_column(conn):
     """Ajouter UNIQUEMENT la colonne texte aux étiquettes (indépendante)"""
@@ -102,12 +96,11 @@ def ensure_etiquettes_texte_column(conn):
         if not cursor.fetchone():
             cursor.execute("ALTER TABLE etiquettes_grille ADD COLUMN texte TEXT DEFAULT ''")
             conn.commit()
-            logger.info("Colonne 'texte' ajoutée à la table etiquettes_grille")
+            print("✅ Colonne 'texte' ajoutée à la table etiquettes_grille")
         
-    except psycopg2.Error as e:
-        logger.error(f"Erreur lors de l'ajout de la colonne texte: {e}")
-        conn.rollback()
-        raise
+    except Exception as e:
+        print(f"❌ Erreur lors de la vérification/création de la colonne texte: {e}")
+        raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
 
 # ========================================================================
 #  GESTION DES TEMPLATES DE TEXTE
@@ -140,11 +133,11 @@ def get_all_templates():
                 'updated_at': row[5].isoformat() if row[5] else None
             })
         
-        logger.info(f"Récupération de {len(templates)} templates")
+        print(f"✅ Récupération de {len(templates)} templates")
         return {"success": True, "data": templates}
         
-    except psycopg2.Error as e:
-        logger.error(f"Erreur lors de la récupération des templates: {e}")
+    except Exception as e:
+        print(f"❌ Erreur lors de la récupération de tous les templates: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
@@ -178,11 +171,11 @@ def get_template_by_id(template_id: int):
             'updated_at': row[5].isoformat() if row[5] else None
         }
         
-        logger.info(f"Template {template_id} récupéré")
+        print(f"Template {template_id} récupéré")
         return {"success": True, "data": template}
         
-    except psycopg2.Error as e:
-        logger.error(f"Erreur lors de la récupération du template {template_id}: {e}")
+    except Exception as e:
+        print(f"❌ Erreur lors de la récupération du template {template_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
@@ -214,16 +207,16 @@ def create_template(template_data: Dict[str, Any]):
         template_id = cursor.fetchone()[0]
         conn.commit()
         
-        logger.info(f"Template '{template_data['name']}' créé avec l'ID {template_id}")
+        print(f"Template '{template_data['name']}' créé avec l'ID {template_id}")
         return {
             "success": True, 
             "message": "Template créé avec succès", 
             "id": template_id
         }
         
-    except psycopg2.Error as e:
+    except Exception as e:
         conn.rollback()
-        logger.error(f"Erreur lors de la création du template: {e}")
+        print(f"❌ Erreur lors de la création du template: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
@@ -261,12 +254,12 @@ def update_template(template_id: int, template_data: Dict[str, Any]):
         
         conn.commit()
         
-        logger.info(f"Template {template_id} mis à jour")
+        print(f"Template {template_id} mis à jour")
         return {"success": True, "message": "Template mis à jour avec succès"}
         
-    except psycopg2.Error as e:
+    except Exception as e:
         conn.rollback()
-        logger.error(f"Erreur lors de la mise à jour du template {template_id}: {e}")
+        print(f"❌ Erreur lors de la mise à jour du template: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
@@ -290,12 +283,12 @@ def delete_template(template_id: int):
         cursor.execute("DELETE FROM text_templates WHERE id = %s", (template_id,))
         conn.commit()
         
-        logger.info(f"Template {template_id} supprimé")
+        print(f"Template {template_id} supprimé")
         return {"success": True, "message": "Template supprimé avec succès"}
         
-    except psycopg2.Error as e:
+    except Exception as e:
         conn.rollback()
-        logger.error(f"Erreur lors de la suppression du template {template_id}: {e}")
+        print(f"❌ Erreur lors de la suppression du template: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
@@ -320,11 +313,11 @@ def get_etiquette_texte(etiquette_id: int):
         if not row:
             raise HTTPException(status_code=404, detail="Étiquette non trouvée")
         
-        logger.info(f"Texte de l'étiquette {etiquette_id} récupéré")
+        print(f"Texte de l'étiquette {etiquette_id} récupéré")
         return {"success": True, "data": {"texte": row[0] or ""}}
         
-    except psycopg2.Error as e:
-        logger.error(f"Erreur lors de la récupération du texte de l'étiquette {etiquette_id}: {e}")
+    except Exception as e:
+        print(f"❌ Erreur lors de la récupération du texte de l'étiquette {etiquette_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
@@ -353,12 +346,12 @@ def update_etiquette_texte(etiquette_id: int, texte_data: Dict[str, Any]):
         
         conn.commit()
         
-        logger.info(f"Texte de l'étiquette {etiquette_id} mis à jour")
+        print(f"Texte de l'étiquette {etiquette_id} mis à jour")
         return {"success": True, "message": "Texte de l'étiquette mis à jour avec succès"}
         
-    except psycopg2.Error as e:
+    except Exception as e:
         conn.rollback()
-        logger.error(f"Erreur lors de la mise à jour du texte de l'étiquette {etiquette_id}: {e}")
+        print(f"❌ Erreur lors de la mise à jour du texte de l'étiquette: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
@@ -394,16 +387,16 @@ def apply_template_to_etiquette(etiquette_id: int, template_id: int):
         
         conn.commit()
         
-        logger.info(f"Template {template_id} appliqué à l'étiquette {etiquette_id}")
+        print(f"Template {template_id} appliqué à l'étiquette {etiquette_id}")
         return {
             "success": True, 
             "message": "Template appliqué avec succès à l'étiquette",
             "texte": template_row[0]
         }
         
-    except psycopg2.Error as e:
+    except Exception as e:
         conn.rollback()
-        logger.error(f"Erreur lors de l'application du template {template_id} à l'étiquette {etiquette_id}: {e}")
+        print(f"❌ Erreur lors de l'application du template: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
@@ -464,15 +457,15 @@ def get_etiquettes_with_text():
                 'planifications': row[7]  # ← Déjà au format JSON !
             })
         
-        logger.info(f"✅ Récupération optimisée de {len(etiquettes)} étiquettes avec texte")
+        print(f"✅ Récupération optimisée de {len(etiquettes)} étiquettes avec texte")
         return {
             "success": True, 
             "count": len(etiquettes),
             "data": etiquettes
         }
         
-    except psycopg2.Error as e:
-        logger.error(f"Erreur lors de la récupération des étiquettes avec texte: {e}")
+    except Exception as e:
+        print(f"❌ Erreur lors de la récupération des étiquettes avec texte: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
@@ -507,8 +500,8 @@ def init_templates_table():
             }
         }
         
-    except psycopg2.Error as e:
-        logger.error(f"Erreur lors de l'initialisation de la table templates: {e}")
+    except Exception as e:
+        print(f"❌ Erreur lors de la création de la table des templates: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
@@ -552,8 +545,8 @@ def get_templates_status():
             ]
         }
         
-    except psycopg2.Error as e:
-        logger.error(f"Erreur lors de la vérification du statut templates: {e}")
+    except Exception as e:
+        print(f"❌ Erreur lors de la vérification du statut des templates: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
@@ -591,8 +584,8 @@ def init_etiquettes_texte_column():
             }
         }
         
-    except psycopg2.Error as e:
-        logger.error(f"Erreur lors de l'initialisation de la colonne texte: {e}")
+    except Exception as e:
+        print(f"❌ Erreur lors de l'ajout de la colonne texte aux étiquettes: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
@@ -642,9 +635,8 @@ def get_etiquettes_texte_status():
             ]
         }
         
-    except psycopg2.Error as e:
-        logger.error(f"Erreur lors de la vérification du statut texte étiquettes: {e}")
+    except Exception as e:
+        print(f"❌ Erreur lors de la vérification du statut texte étiquettes: {e}")
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
-
