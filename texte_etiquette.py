@@ -12,7 +12,6 @@ from typing import Dict, Optional, Any, List
 from datetime import datetime
 from main import get_db_connection, close_db_connection
 import psycopg2
-import logging
 
 # Configuration du logging
 logging.basicConfig(level=logging.INFO)
@@ -648,3 +647,4 @@ def get_etiquettes_texte_status():
         raise HTTPException(status_code=500, detail=f"Erreur base de données: {str(e)}")
     finally:
         close_db_connection(conn)
+
