@@ -302,13 +302,14 @@ def get_all_etiquettes_grille():
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # ✅ OPTIMISATION : Agrégation côté SQL avec JSON
+        # ✅ MODIFICATION : Ajouter la colonne texte
         cur.execute("""
             SELECT 
                 e.id,
                 e.type_activite,
                 e.description,
                 e.group_id,
+                e.texte,              -- ← AJOUT de la colonne texte
                 e.created_at,
                 e.updated_at,
                 -- Agrégation des planifications en JSON
@@ -326,7 +327,7 @@ def get_all_etiquettes_grille():
                 ) as planifications_json
             FROM etiquettes_grille e
             LEFT JOIN planifications_etiquettes p ON e.id = p.etiquette_id
-            GROUP BY e.id, e.type_activite, e.description, e.group_id, e.created_at, e.updated_at
+            GROUP BY e.id, e.type_activite, e.description, e.group_id, e.texte, e.created_at, e.updated_at  -- ← AJOUT dans GROUP BY
             ORDER BY e.created_at DESC
         """)
         
@@ -340,9 +341,10 @@ def get_all_etiquettes_grille():
                 "type_activite": row[1],
                 "description": row[2],
                 "group_id": row[3],
-                "created_at": row[4].isoformat() if row[4] else None,
-                "updated_at": row[5].isoformat() if row[5] else None,
-                "planifications": row[6]  # ← Déjà au format JSON !
+                "texte": row[4] or "",     # ← AJOUT du champ texte
+                "created_at": row[5].isoformat() if row[5] else None,  # ← Index décalé
+                "updated_at": row[6].isoformat() if row[6] else None,  # ← Index décalé
+                "planifications": row[7]   # ← Index décalé
             })
         
         return {
@@ -378,15 +380,16 @@ def create_etiquette_grille(etiquette_data: Dict[str, Any]):
         cur.execute("BEGIN")
         
         try:
-            # Créer l'étiquette principale
+            # ✅ MODIFICATION : Créer l'étiquette principale avec texte
             cur.execute("""
-                INSERT INTO etiquettes_grille (type_activite, description, group_id)
-                VALUES (%s, %s, %s)
+                INSERT INTO etiquettes_grille (type_activite, description, group_id, texte)
+                VALUES (%s, %s, %s, %s)
                 RETURNING id, created_at, updated_at
             """, (
                 etiquette_data['type_activite'],
                 etiquette_data.get('description'),
-                etiquette_data.get('group_id')
+                etiquette_data.get('group_id'),
+                etiquette_data.get('texte', '')  # ← AJOUT du paramètre texte
             ))
             
             etiquette_result = cur.fetchone()
@@ -448,6 +451,7 @@ def create_etiquette_grille(etiquette_data: Dict[str, Any]):
                     "type_activite": etiquette_data['type_activite'],
                     "description": etiquette_data.get('description'),
                     "group_id": etiquette_data.get('group_id'),
+                    "texte": etiquette_data.get('texte', ''),  # ← AJOUT dans la réponse
                     "created_at": etiquette_result[1].isoformat(),
                     "updated_at": etiquette_result[2].isoformat(),
                     "planifications": planifications_creees
@@ -488,7 +492,8 @@ def update_etiquette_grille(etiquette_id: int, etiquette_data: Dict[str, Any]):
         update_fields = []
         update_values = []
         
-        for field in ['type_activite', 'description', 'group_id']:
+        # ✅ MODIFICATION : Ajouter 'texte' aux champs modifiables
+        for field in ['type_activite', 'description', 'group_id', 'texte']:
             if field in etiquette_data:
                 update_fields.append(f"{field} = %s")
                 update_values.append(etiquette_data[field])
@@ -532,7 +537,8 @@ def update_etiquette_grille(etiquette_id: int, etiquette_data: Dict[str, Any]):
         return {
             "status": "✅ Étiquette mise à jour (optimisé)",
             "etiquette_id": etiquette_id,
-            "planifications_updated": len(etiquette_data.get('planifications', []))
+            "planifications_updated": len(etiquette_data.get('planifications', [])),
+            "texte_updated": 'texte' in etiquette_data  # ← AJOUT d'info sur la mise à jour du texte
         }
         
     except HTTPException:
@@ -546,6 +552,7 @@ def update_etiquette_grille(etiquette_id: int, etiquette_data: Dict[str, Any]):
     finally:
         if conn:
             close_db_connection(conn)
+
 
 @router.put("/etiquettes-grille/{etiquette_id}/horaires")
 def update_etiquette_horaires(etiquette_id: int, horaires_data: Dict[str, Any]):
