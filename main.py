@@ -161,9 +161,26 @@ except ImportError:
     DISPONIBILITES_AVAILABLE = False
 
 try:
+    print("🔍 Tentative d'import texte_etiquette...")
+    print(f"🔍 Répertoire actuel : {os.getcwd()}")
+    print(f"🔍 Fichiers Python trouvés : {[f for f in os.listdir('.') if f.endswith('.py')]}")
+    
     from texte_etiquette import router as texte_etiquette_router
+    
+    print("✅ Import texte_etiquette réussi !")
+    print(f"✅ Router disponible : {texte_etiquette_router is not None}")
+    print(f"✅ Nombre de routes : {len(texte_etiquette_router.routes) if texte_etiquette_router else 0}")
+    
     TEXTE_ETIQUETTE_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    print(f"❌ Import texte_etiquette échoué (ImportError): {e}")
+    print(f"❌ Détails erreur : {repr(e)}")
+    texte_etiquette_router = None
+    TEXTE_ETIQUETTE_AVAILABLE = False
+except Exception as e:
+    print(f"❌ Autre erreur lors de l'import texte_etiquette: {e}")
+    print(f"❌ Type d'erreur : {type(e).__name__}")
+    print(f"❌ Détails erreur : {repr(e)}")
     texte_etiquette_router = None
     TEXTE_ETIQUETTE_AVAILABLE = False
 
