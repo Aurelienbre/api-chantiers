@@ -508,17 +508,17 @@ app.add_middleware(
 
 # Inclure les routers seulement s'ils sont disponibles
 if BETA_API_AVAILABLE and beta_api_router:
-    app.include_router(beta_api_router, prefix="", tags=["Beta-API"])
+    app.include_router(beta_api_router, prefix="")
 
 if GRILLE_SEMAINE_AVAILABLE and grille_semaine_router:
-    app.include_router(grille_semaine_router, prefix="", tags=["Grille Semaine"])
+    app.include_router(grille_semaine_router, prefix="")
 
 if DISPONIBILITES_AVAILABLE and disponibilites_router:
-    app.include_router(disponibilites_router, prefix="", tags=["Disponibilités"])
+    app.include_router(disponibilites_router, prefix="")
 
 if TEXTE_ETIQUETTE_AVAILABLE and texte_etiquette_router:
-    app.include_router(texte_etiquette_router, prefix="", tags=["Templates et Texte Étiquettes"])
-    
+    app.include_router(texte_etiquette, prefix="")
+
 @app.get("/")
 def read_root():
     """Point d'entrée de l'API"""
