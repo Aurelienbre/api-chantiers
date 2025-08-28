@@ -160,46 +160,119 @@ except ImportError:
     disponibilites_router = None
     DISPONIBILITES_AVAILABLE = False
 
+try:
+    from texte_etiquette import router as texte_etiquette_router
+    TEXTE_ETIQUETTE_AVAILABLE = True
+except ImportError:
+    texte_etiquette_router = None
+    TEXTE_ETIQUETTE_AVAILABLE = False
 
 
 def ensure_etiquettes_grille_tables(conn):
-    """S'assurer que les tables pour les étiquettes de grille existent"""
+    """S'assurer que les tables pour les étiquettes de grille existent avec support du texte"""
     cur = conn.cursor()
     
-    # Table principale des étiquettes de grille
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS etiquettes_grille (
-            id SERIAL PRIMARY KEY,
-            type_activite VARCHAR(255) NOT NULL,
-            description TEXT,
-            group_id VARCHAR(100),
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    
-    # Table des planifications d'étiquettes
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS planifications_etiquettes (
-            id SERIAL PRIMARY KEY,
-            etiquette_id INTEGER NOT NULL REFERENCES etiquettes_grille(id) ON DELETE CASCADE,
-            date_jour DATE NOT NULL,
-            heure_debut TIME NOT NULL,
-            heure_fin TIME NOT NULL,
-            preparateurs TEXT NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-            
-            CONSTRAINT check_heures CHECK (heure_debut < heure_fin)
-        )
-    """)
-    
-    # Index pour améliorer les performances
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_etiquettes_type_activite ON etiquettes_grille (type_activite)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_etiquettes_group_id ON etiquettes_grille (group_id)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_planif_etiquettes_date ON planifications_etiquettes (date_jour)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_planif_etiquettes_etiquette ON planifications_etiquettes (etiquette_id)")
-    
-    conn.commit()
+    try:
+        # Table principale des étiquettes de grille AVEC la colonne texte
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS etiquettes_grille (
+                id SERIAL PRIMARY KEY,
+                type_activite VARCHAR(255) NOT NULL,
+                description TEXT,
+                group_id VARCHAR(100),
+                texte TEXT DEFAULT '',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        
+        # ✅ AMÉLIORATION : Vérification robuste de la colonne texte (migration)
+        cur.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'etiquettes_grille' AND column_name = 'texte'
+        """)
+        
+        if not cur.fetchone():
+            # Ajouter la colonne texte si elle n'existe pas
+            cur.execute("ALTER TABLE etiquettes_grille ADD COLUMN texte TEXT DEFAULT ''")
+            print("✅ Migration: Colonne 'texte' ajoutée à etiquettes_grille")
+        
+        # Table des planifications d'étiquettes
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS planifications_etiquettes (
+                id SERIAL PRIMARY KEY,
+                etiquette_id INTEGER NOT NULL REFERENCES etiquettes_grille(id) ON DELETE CASCADE,
+                date_jour DATE NOT NULL,
+                heure_debut TIME NOT NULL,
+                heure_fin TIME NOT NULL,
+                preparateurs TEXT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                
+                CONSTRAINT check_heures CHECK (heure_debut < heure_fin)
+            )
+        """)
+        
+        # ✅ AMÉLIORATION : Index pour les recherches dans le texte (PostgreSQL)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_etiquettes_type_activite 
+            ON etiquettes_grille (type_activite)
+        """)
+        
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_etiquettes_group_id 
+            ON etiquettes_grille (group_id)
+        """)
+        
+        # ✅ NOUVEAU : Index pour recherche full-text dans le texte des étiquettes
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_etiquettes_texte_search 
+            ON etiquettes_grille 
+            USING gin(to_tsvector('french', COALESCE(texte, '')))
+        """)
+        
+        # ✅ NOUVEAU : Index pour les étiquettes avec texte non-vide
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_etiquettes_has_text 
+            ON etiquettes_grille (texte) 
+            WHERE texte IS NOT NULL AND texte != ''
+        """)
+        
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_planif_etiquettes_date 
+            ON planifications_etiquettes (date_jour)
+        """)
+        
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_planif_etiquettes_etiquette 
+            ON planifications_etiquettes (etiquette_id)
+        """)
+        
+        # ✅ AMÉLIORATION : Trigger pour updated_at automatique
+        cur.execute("""
+            CREATE OR REPLACE FUNCTION update_etiquettes_updated_at()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                NEW.updated_at = CURRENT_TIMESTAMP;
+                RETURN NEW;
+            END;
+            $$ language 'plpgsql';
+        """)
+        
+        cur.execute("""
+            DROP TRIGGER IF EXISTS update_etiquettes_grille_updated_at ON etiquettes_grille;
+            CREATE TRIGGER update_etiquettes_grille_updated_at 
+                BEFORE UPDATE ON etiquettes_grille 
+                FOR EACH ROW EXECUTE FUNCTION update_etiquettes_updated_at();
+        """)
+        
+        conn.commit()
+        print("✅ Tables étiquettes de grille créées/vérifiées avec support du texte")
+        
+    except Exception as e:
+        print(f"🚨 Erreur lors de la création des tables étiquettes: {e}")
+        conn.rollback()
+        raise
 
 def ensure_chantiers_tables(conn):
     """S'assurer que les tables pour les chantiers et préparateurs existent"""
@@ -425,16 +498,43 @@ if GRILLE_SEMAINE_AVAILABLE and grille_semaine_router:
 
 if DISPONIBILITES_AVAILABLE and disponibilites_router:
     app.include_router(disponibilites_router, prefix="", tags=["Disponibilités"])
+
+if TEXTE_ETIQUETTE_AVAILABLE and texte_etiquette_router:
+    app.include_router(texte_etiquette_router, prefix="", tags=["Templates et Texte Étiquettes"])
     
 @app.get("/")
 def read_root():
     """Point d'entrée de l'API"""
     modules_status = {
         "beta_api": "✅ Disponible" if BETA_API_AVAILABLE else "❌ Non disponible",
-        "grille_semaine": "✅ Disponible" if GRILLE_SEMAINE_AVAILABLE else "❌ Non disponible"
+        "grille_semaine": "✅ Disponible" if GRILLE_SEMAINE_AVAILABLE else "❌ Non disponible",
+        "disponibilites": "✅ Disponible" if DISPONIBILITES_AVAILABLE else "❌ Non disponible",
+        "texte_etiquette": "✅ Disponible" if TEXTE_ETIQUETTE_AVAILABLE else "❌ Non disponible"
     }
     
     pool_status = "✅ Actif" if connection_pool else "❌ Désactivé"
+    
+    # ✅ AJOUT : Vérifier les tables spécifiques
+    tables_status = {}
+    if TEXTE_ETIQUETTE_AVAILABLE:
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            
+            # Vérifier table text_templates
+            cur.execute("SELECT COUNT(*) FROM text_templates")
+            templates_count = cur.fetchone()[0]
+            tables_status["text_templates"] = f"✅ {templates_count} template(s)"
+            
+            # Vérifier colonne texte dans etiquettes
+            cur.execute("SELECT COUNT(*) FROM etiquettes_grille WHERE texte IS NOT NULL AND texte != ''")
+            etiquettes_with_text = cur.fetchone()[0]
+            tables_status["etiquettes_with_text"] = f"✅ {etiquettes_with_text} étiquette(s) avec texte"
+            
+            close_db_connection(conn)
+        except Exception:
+            tables_status["text_templates"] = "⚠️ Non vérifiable"
+            tables_status["etiquettes_with_text"] = "⚠️ Non vérifiable"
     
     return {
         "message": "API de Planification",
@@ -443,9 +543,14 @@ def read_root():
         "modules": modules_status,
         "endpoints": {
             "beta_api": "Gestion des chantiers et préparateurs" if BETA_API_AVAILABLE else "Module non chargé",
-            "grille_semaine": "Gestion des étiquettes et horaires" if GRILLE_SEMAINE_AVAILABLE else "Module non chargé"
-        }
+            "grille_semaine": "Gestion des étiquettes et horaires" if GRILLE_SEMAINE_AVAILABLE else "Module non chargé",
+            "disponibilites": "Gestion des disponibilités" if DISPONIBILITES_AVAILABLE else "Module non chargé",
+            "texte_etiquette": "Gestion des templates et textes d'étiquettes" if TEXTE_ETIQUETTE_AVAILABLE else "Module non chargé"
+        },
+        # ✅ AJOUT : Statut détaillé des tables
+        "tables_status": tables_status if TEXTE_ETIQUETTE_AVAILABLE else {}
     }
+
 
 @app.get("/health")
 def health_check():
@@ -488,51 +593,26 @@ def health_check():
 # ENDPOINTS DE NETTOYAGE COMPLET DE LA BASE DE DONNÉES
 # ========================================================================
 
+
 @app.delete("/admin/reset-database")
 def reset_complete_database():
     """DANGER: Vider complètement toute la base de données - À utiliser avec précaution!"""
     conn = None
     try:
-        
-        
         conn = get_db_connection()
         cur = conn.cursor()
-        
-        # Compter les enregistrements avant suppression
-        tables_info = []
         
         # Liste des tables principales de l'application
         tables_to_check = [
             'chantiers', 'planifications', 'soldes', 'preparateurs', 
             'disponibilites', 'etiquettes_grille', 'planifications_etiquettes',
-            'horaires_preparateurs', 'etiquettes_planification'
+            'horaires_preparateurs', 'etiquettes_planification', 'text_templates'  # ← AJOUT
         ]
         
-        # Compter les enregistrements dans chaque table
-        for table_name in tables_to_check:
-            try:
-                cur.execute(f"SELECT COUNT(*) FROM {table_name}")
-                count = cur.fetchone()[0]
-                if count > 0:
-                    tables_info.append({"table": table_name, "records": count})
-            except Exception:
-                # Table n'existe pas, on continue
-                pass
-        
-        total_records_before = sum(t["records"] for t in tables_info)
-        
-        if total_records_before == 0:
-            return {
-                "status": "ℹ️ Base de données déjà vide",
-                "message": "Aucune donnée à supprimer",
-                "tables_info": []
-            }
-        
-        # Supprimer toutes les données dans l'ordre (contraintes de clés étrangères)
-        deletion_summary = []
+        # ... rest of existing code ...
         
         # 1. Supprimer les tables de planifications en premier (dépendent des autres)
-        for table in ['planifications', 'planifications_etiquettes', 'soldes', 'disponibilites']:
+        for table in ['planifications', 'planifications_etiquettes', 'soldes', 'disponibilites', 'text_templates']:  # ← AJOUT
             try:
                 cur.execute(f"DELETE FROM {table}")
                 deleted = cur.rowcount
@@ -542,75 +622,13 @@ def reset_complete_database():
                 # Table n'existe peut-être pas
                 pass
         
-        # 2. Supprimer les tables principales
-        for table in ['chantiers', 'etiquettes_grille', 'preparateurs', 'horaires_preparateurs']:
-            try:
-                cur.execute(f"DELETE FROM {table}")
-                deleted = cur.rowcount
-                if deleted > 0:
-                    deletion_summary.append({"table": table, "deleted": deleted})
-            except Exception as e:
-                # Table n'existe peut-être pas
-                pass
-        
-        # 3. Supprimer les anciennes tables si elles existent
-        for table in ['etiquettes_planification']:
-            try:
-                cur.execute(f"DELETE FROM {table}")
-                deleted = cur.rowcount
-                if deleted > 0:
-                    deletion_summary.append({"table": table, "deleted": deleted})
-            except Exception as e:
-                # Table n'existe peut-être pas
-                pass
-        
-        # 4. Reset des séquences (pour repartir les IDs à 1)
-        sequences_reset = []
-        for table in ['chantiers', 'etiquettes_grille', 'preparateurs', 'planifications', 'planifications_etiquettes', 'soldes', 'disponibilites', 'horaires_preparateurs']:
-            try:
-                cur.execute(f"ALTER SEQUENCE {table}_id_seq RESTART WITH 1")
-                sequences_reset.append(table)
-            except Exception:
-                # Séquence n'existe peut-être pas
-                pass
-        
-        conn.commit()
-        
-        total_deleted = sum(d["deleted"] for d in deletion_summary)
-        
-        return {
-            "status": "🗑️ Base de données vidée complètement",
-            "summary": {
-                "total_records_before": total_records_before,
-                "total_deleted": total_deleted,
-                "tables_processed": len(deletion_summary),
-                "sequences_reset": len(sequences_reset)
-            },
-            "deletion_details": deletion_summary,
-            "sequences_reset": sequences_reset,
-            "message": "⚠️ TOUTES les données ont été supprimées définitivement !",
-            "next_steps": [
-                "Vous pouvez maintenant recréer vos données proprement",
-                "Les IDs recommenceront à 1 pour toutes les tables",
-                "Les structures de tables sont conservées"
-            ]
-        }
-        
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Erreur lors du reset de la base: {str(e)}")
-    finally:
-        if conn:
-            close_db_connection(conn)
+        # ... rest of existing code ...
 
 @app.delete("/admin/drop-all-tables")
 def drop_all_tables():
     """DANGER EXTRÊME: Supprimer complètement toutes les tables - Structure ET données!"""
     conn = None
     try:
-        
-        
         conn = get_db_connection()
         cur = conn.cursor()
         
@@ -621,59 +639,17 @@ def drop_all_tables():
             WHERE schemaname = 'public' 
             AND tablename IN ('chantiers', 'planifications', 'soldes', 'preparateurs', 
                              'disponibilites', 'etiquettes_grille', 'planifications_etiquettes',
-                             'horaires_preparateurs', 'etiquettes_planification')
+                             'horaires_preparateurs', 'etiquettes_planification', 'text_templates')  -- ← AJOUT
         """)
         
-        tables_found = [row[0] for row in cur.fetchall()]
-        
-        if not tables_found:
-            return {
-                "status": "ℹ️ Aucune table à supprimer",
-                "message": "Les tables de l'application n'existent pas",
-                "tables_found": []
-            }
-        
-        # Supprimer toutes les tables (CASCADE pour gérer les contraintes)
-        tables_dropped = []
-        for table_name in tables_found:
-            try:
-                cur.execute(f"DROP TABLE IF EXISTS {table_name} CASCADE")
-                tables_dropped.append(table_name)
-            except Exception as e:
-                print(f"Erreur suppression table {table_name}: {e}")
-        
-        conn.commit()
-        
-        return {
-            "status": "💥 Tables supprimées complètement",
-            "summary": {
-                "tables_found": len(tables_found),
-                "tables_dropped": len(tables_dropped)
-            },
-            "tables_dropped": tables_dropped,
-            "message": "⚠️ STRUCTURE ET DONNÉES supprimées définitivement !",
-            "warning": "Les tables devront être recréées lors de la prochaine utilisation de l'API",
-            "next_steps": [
-                "Redémarrez l'API pour recréer les tables automatiquement",
-                "Ou utilisez les endpoints POST pour déclencher la création des tables"
-            ]
-        }
-        
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression des tables: {str(e)}")
-    finally:
-        if conn:
-            close_db_connection(conn)
+        # ... rest of existing code ...
+
 
 @app.post("/admin/create-all-tables")
 def create_all_tables():
     """Créer toutes les tables de l'application"""
     conn = None
     try:
-        
-        
         conn = get_db_connection()
         
         # Créer les tables des chantiers et préparateurs
@@ -681,6 +657,15 @@ def create_all_tables():
         
         # Créer les tables des étiquettes
         ensure_etiquettes_grille_tables(conn)
+        
+        # ✅ AJOUT : Créer les tables des templates de texte
+        from texte_etiquette import ensure_text_templates_table
+        try:
+            ensure_text_templates_table(conn)
+            templates_table_created = True
+        except Exception as e:
+            print(f"⚠️ Erreur création table templates: {e}")
+            templates_table_created = False
         
         # Vérifier que les tables ont bien été créées
         cur = conn.cursor()
@@ -690,7 +675,7 @@ def create_all_tables():
             WHERE schemaname = 'public' 
             AND tablename IN ('preparateurs', 'chantiers', 'planifications', 'soldes', 
                              'disponibilites', 'horaires_preparateurs',
-                             'etiquettes_grille', 'planifications_etiquettes')
+                             'etiquettes_grille', 'planifications_etiquettes', 'text_templates')  -- ← AJOUT
             ORDER BY tablename
         """)
         
@@ -706,12 +691,16 @@ def create_all_tables():
                 ],
                 "etiquettes_system": [
                     "etiquettes_grille", "planifications_etiquettes"
-                ]
+                ],
+                "texte_system": [
+                    "text_templates"
+                ] if templates_table_created else []  # ← AJOUT
             },
             "message": "🎉 Votre base de données est prête à recevoir des données !",
             "next_steps": [
                 "Utilisez Beta-API.html avec les routes /chantiers/*",
                 "Utilisez Grille semaine.html avec les routes /etiquettes-grille/*",
+                "Utilisez les routes /text-templates/* pour gérer les templates",  # ← AJOUT
                 "Ajoutez vos préparateurs via POST /preparateurs",
                 "Créez vos chantiers via POST /chantiers"
             ]
@@ -724,6 +713,3 @@ def create_all_tables():
     finally:
         if conn:
            close_db_connection(conn)
-
-
-
