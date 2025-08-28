@@ -593,6 +593,9 @@ def health_check():
 # ENDPOINTS DE NETTOYAGE COMPLET DE LA BASE DE DONNÉES
 # ========================================================================
 
+# ========================================================================
+# ENDPOINTS DE NETTOYAGE COMPLET DE LA BASE DE DONNÉES
+# ========================================================================
 
 @app.delete("/admin/reset-database")
 def reset_complete_database():
@@ -606,25 +609,52 @@ def reset_complete_database():
         tables_to_check = [
             'chantiers', 'planifications', 'soldes', 'preparateurs', 
             'disponibilites', 'etiquettes_grille', 'planifications_etiquettes',
-            'horaires_preparateurs', 'etiquettes_planification', 'text_templates'  # ← AJOUT
+            'horaires_preparateurs', 'text_templates'
         ]
         
-        # ... rest of existing code ...
+        deletion_summary = []
         
-        # 1. Supprimer les tables de planifications en premier (dépendent des autres)
-        for table in ['planifications', 'planifications_etiquettes', 'soldes', 'disponibilites', 'text_templates']:  # ← AJOUT
+        # 1. Supprimer les tables dépendantes en premier
+        dependent_tables = ['planifications', 'planifications_etiquettes', 'soldes', 'disponibilites', 'text_templates']
+        for table in dependent_tables:
             try:
                 cur.execute(f"DELETE FROM {table}")
                 deleted = cur.rowcount
                 if deleted > 0:
                     deletion_summary.append({"table": table, "deleted": deleted})
             except Exception as e:
-                # Table n'existe peut-être pas
-                pass
+                print(f"⚠️ Erreur suppression {table}: {e}")
         
-        # ... rest of existing code ...
+        # 2. Supprimer les tables principales
+        main_tables = ['chantiers', 'etiquettes_grille', 'preparateurs', 'horaires_preparateurs']
+        for table in main_tables:
+            try:
+                cur.execute(f"DELETE FROM {table}")
+                deleted = cur.rowcount
+                if deleted > 0:
+                    deletion_summary.append({"table": table, "deleted": deleted})
+            except Exception as e:
+                print(f"⚠️ Erreur suppression {table}: {e}")
+        
+        conn.commit()
+        
+        return {
+            "status": "🗑️ BASE DE DONNÉES VIDÉE COMPLÈTEMENT",
+            "warning": "TOUTES LES DONNÉES ONT ÉTÉ SUPPRIMÉES",
+            "deletion_summary": deletion_summary,
+            "total_deleted": sum(item["deleted"] for item in deletion_summary),
+            "message": "La structure des tables reste intacte, seules les données ont été supprimées"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression: {str(e)}")
+    finally:
+        if conn:
+            close_db_connection(conn)
 
-@app.delete("/admin/drop-all-tables")
+@app.delete("/admin/drop-all-tables") 
 def drop_all_tables():
     """DANGER EXTRÊME: Supprimer complètement toutes les tables - Structure ET données!"""
     conn = None
@@ -632,18 +662,51 @@ def drop_all_tables():
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Lister toutes les tables de l'application
+        # Lister toutes les tables existantes
         cur.execute("""
             SELECT tablename 
             FROM pg_tables 
             WHERE schemaname = 'public' 
             AND tablename IN ('chantiers', 'planifications', 'soldes', 'preparateurs', 
                              'disponibilites', 'etiquettes_grille', 'planifications_etiquettes',
-                             'horaires_preparateurs', 'etiquettes_planification', 'text_templates')  -- ← AJOUT
+                             'horaires_preparateurs', 'text_templates')
         """)
         
-        # ... rest of existing code ...
-
+        existing_tables = [row[0] for row in cur.fetchall()]
+        dropped_tables = []
+        
+        # Supprimer les tables dans le bon ordre (dépendances)
+        drop_order = [
+            'planifications', 'planifications_etiquettes', 'soldes', 'disponibilites', 
+            'horaires_preparateurs', 'text_templates', 'chantiers', 'etiquettes_grille', 'preparateurs'
+        ]
+        
+        for table in drop_order:
+            if table in existing_tables:
+                try:
+                    cur.execute(f"DROP TABLE IF EXISTS {table} CASCADE")
+                    dropped_tables.append(table)
+                except Exception as e:
+                    print(f"⚠️ Erreur suppression table {table}: {e}")
+        
+        conn.commit()
+        
+        return {
+            "status": "💥 TABLES SUPPRIMÉES COMPLÈTEMENT",
+            "warning": "STRUCTURE ET DONNÉES SUPPRIMÉES - PERTE TOTALE",
+            "existing_tables": existing_tables,
+            "dropped_tables": dropped_tables,
+            "remaining_tables": list(set(existing_tables) - set(dropped_tables)),
+            "message": "Utilisez POST /admin/create-all-tables pour recréer la structure"
+        }
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur lors de la suppression des tables: {str(e)}")
+    finally:
+        if conn:
+            close_db_connection(conn)
 
 @app.post("/admin/create-all-tables")
 def create_all_tables():
@@ -659,12 +722,15 @@ def create_all_tables():
         ensure_etiquettes_grille_tables(conn)
         
         # ✅ AJOUT : Créer les tables des templates de texte
-        from texte_etiquette import ensure_text_templates_table
-        try:
-            ensure_text_templates_table(conn)
-            templates_table_created = True
-        except Exception as e:
-            print(f"⚠️ Erreur création table templates: {e}")
+        if TEXTE_ETIQUETTE_AVAILABLE:
+            try:
+                from texte_etiquette import ensure_text_templates_table
+                ensure_text_templates_table(conn)
+                templates_table_created = True
+            except Exception as e:
+                print(f"⚠️ Erreur création table templates: {e}")
+                templates_table_created = False
+        else:
             templates_table_created = False
         
         # Vérifier que les tables ont bien été créées
@@ -675,7 +741,7 @@ def create_all_tables():
             WHERE schemaname = 'public' 
             AND tablename IN ('preparateurs', 'chantiers', 'planifications', 'soldes', 
                              'disponibilites', 'horaires_preparateurs',
-                             'etiquettes_grille', 'planifications_etiquettes', 'text_templates')  -- ← AJOUT
+                             'etiquettes_grille', 'planifications_etiquettes', 'text_templates')
             ORDER BY tablename
         """)
         
@@ -694,13 +760,13 @@ def create_all_tables():
                 ],
                 "texte_system": [
                     "text_templates"
-                ] if templates_table_created else []  # ← AJOUT
+                ] if templates_table_created else []
             },
             "message": "🎉 Votre base de données est prête à recevoir des données !",
             "next_steps": [
                 "Utilisez Beta-API.html avec les routes /chantiers/*",
                 "Utilisez Grille semaine.html avec les routes /etiquettes-grille/*",
-                "Utilisez les routes /text-templates/* pour gérer les templates",  # ← AJOUT
+                "Utilisez les routes /text-templates/* pour gérer les templates" if templates_table_created else "Module texte-etiquette non disponible",
                 "Ajoutez vos préparateurs via POST /preparateurs",
                 "Créez vos chantiers via POST /chantiers"
             ]
